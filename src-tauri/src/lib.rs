@@ -445,23 +445,40 @@ async fn send_user_message(
     text: String,
     model: Option<String>,
     effort: Option<String>,
-    approval_policy: Option<String>,
+    access_mode: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
     let sessions = state.sessions.lock().await;
     let session = sessions
         .get(&workspace_id)
         .ok_or("workspace not connected")?;
+    let access_mode = access_mode.unwrap_or_else(|| "current".to_string());
+    let sandbox_policy = match access_mode.as_str() {
+        "full-access" => json!({
+            "type": "dangerFullAccess"
+        }),
+        "read-only" => json!({
+            "type": "readOnly"
+        }),
+        _ => json!({
+            "type": "workspaceWrite",
+            "writableRoots": [session.entry.path],
+            "networkAccess": true
+        }),
+    };
+
+    let approval_policy = if access_mode == "full-access" {
+        "never"
+    } else {
+        "on-request"
+    };
+
     let params = json!({
         "threadId": thread_id,
         "input": [{ "type": "text", "text": text }],
         "cwd": session.entry.path,
-        "approvalPolicy": approval_policy.unwrap_or_else(|| "on-request".to_string()),
-        "sandboxPolicy": {
-            "type": "workspaceWrite",
-            "writableRoots": [session.entry.path],
-            "networkAccess": true
-        },
+        "approvalPolicy": approval_policy,
+        "sandboxPolicy": sandbox_policy,
         "model": model,
         "effort": effort,
     });

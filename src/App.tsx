@@ -29,13 +29,12 @@ import { useSkills } from "./hooks/useSkills";
 import { useDebugLog } from "./hooks/useDebugLog";
 import { useWorkspaceRefreshOnFocus } from "./hooks/useWorkspaceRefreshOnFocus";
 import { useWorkspaceRestore } from "./hooks/useWorkspaceRestore";
-import type { ApprovalPolicy } from "./types";
+import type { AccessMode } from "./types";
 
 function App() {
   const [centerMode, setCenterMode] = useState<"chat" | "diff">("chat");
   const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null);
-  const [approvalPolicy, setApprovalPolicy] =
-    useState<ApprovalPolicy>("on-request");
+  const [accessMode, setAccessMode] = useState<AccessMode>("current");
   const {
     debugOpen,
     setDebugOpen,
@@ -101,7 +100,7 @@ function App() {
     onDebug: addDebugEntry,
     model: resolvedModel,
     effort: selectedEffort,
-    approvalPolicy,
+    accessMode,
     onMessageActivity: refreshGitStatus,
   });
 
@@ -303,8 +302,8 @@ function App() {
                 reasoningOptions={reasoningOptions}
                 selectedEffort={selectedEffort}
                 onSelectEffort={setSelectedEffort}
-                approvalPolicy={approvalPolicy}
-                onSelectApproval={setApprovalPolicy}
+                accessMode={accessMode}
+                onSelectAccessMode={setAccessMode}
                 skills={skills}
               />
             )}

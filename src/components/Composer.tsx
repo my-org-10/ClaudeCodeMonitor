@@ -9,8 +9,8 @@ type ComposerProps = {
   reasoningOptions: string[];
   selectedEffort: string | null;
   onSelectEffort: (effort: string) => void;
-  approvalPolicy: "on-request" | "never" | "unless-trusted";
-  onSelectApproval: (policy: "on-request" | "never" | "unless-trusted") => void;
+  accessMode: "read-only" | "current" | "full-access";
+  onSelectAccessMode: (mode: "read-only" | "current" | "full-access") => void;
   skills: { name: string; description?: string }[];
 };
 
@@ -23,8 +23,8 @@ export function Composer({
   reasoningOptions,
   selectedEffort,
   onSelectEffort,
-  approvalPolicy,
-  onSelectApproval,
+  accessMode,
+  onSelectAccessMode,
   skills,
 }: ComposerProps) {
   const [text, setText] = useState("");
@@ -196,18 +196,18 @@ export function Composer({
             </span>
             <select
               className="composer-select composer-select--approval"
-              aria-label="Approval"
+              aria-label="Agent access"
               disabled={disabled}
-              value={approvalPolicy}
+              value={accessMode}
               onChange={(event) =>
-                onSelectApproval(
-                  event.target.value as "on-request" | "never" | "unless-trusted",
+                onSelectAccessMode(
+                  event.target.value as "read-only" | "current" | "full-access",
                 )
               }
             >
-              <option value="on-request">On request</option>
-              <option value="never">Never</option>
-              <option value="unless-trusted">Unless trusted</option>
+              <option value="read-only">Read only</option>
+              <option value="current">Current</option>
+              <option value="full-access">Full access</option>
             </select>
           </div>
           <div className="composer-select-wrap">

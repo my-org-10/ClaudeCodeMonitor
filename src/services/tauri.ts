@@ -37,7 +37,7 @@ export async function sendUserMessage(
   options?: {
     model?: string | null;
     effort?: string | null;
-    approvalPolicy?: "on-request" | "never" | "unless-trusted";
+    accessMode?: "read-only" | "current" | "full-access";
   },
 ) {
   return invoke("send_user_message", {
@@ -46,7 +46,7 @@ export async function sendUserMessage(
     text,
     model: options?.model ?? null,
     effort: options?.effort ?? null,
-    approvalPolicy: options?.approvalPolicy ?? null,
+    accessMode: options?.accessMode ?? null,
   });
 }
 

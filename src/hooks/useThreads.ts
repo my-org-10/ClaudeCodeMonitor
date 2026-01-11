@@ -376,7 +376,7 @@ type UseThreadsOptions = {
   onDebug?: (entry: DebugEntry) => void;
   model?: string | null;
   effort?: string | null;
-  approvalPolicy?: "on-request" | "never" | "unless-trusted";
+  accessMode?: "read-only" | "current" | "full-access";
   onMessageActivity?: () => void;
 };
 
@@ -661,7 +661,7 @@ export function useThreads({
   onDebug,
   model,
   effort,
-  approvalPolicy,
+  accessMode,
   onMessageActivity,
 }: UseThreadsOptions) {
   const [state, dispatch] = useReducer(threadReducer, initialState);
@@ -1075,7 +1075,7 @@ export function useThreads({
           activeWorkspace.id,
           threadId,
           messageText,
-          { model, effort, approvalPolicy },
+          { model, effort, accessMode },
         );
         onDebug?.({
           id: `${Date.now()}-server-turn-start`,
@@ -1099,7 +1099,7 @@ export function useThreads({
       activeWorkspace,
       activeThreadId,
       effort,
-      approvalPolicy,
+      accessMode,
       model,
       onDebug,
       onMessageActivity,
