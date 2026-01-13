@@ -104,6 +104,7 @@ function MainApp() {
     connectWorkspace,
     markWorkspaceConnected,
     updateWorkspaceSettings,
+    removeWorkspace,
     hasLoaded,
     refreshWorkspaces,
   } = useWorkspaces({ onDebug: addDebugEntry });
@@ -425,6 +426,9 @@ function MainApp() {
       }}
       onDeleteThread={(workspaceId, threadId) => {
         removeThread(workspaceId, threadId);
+      }}
+      onDeleteWorkspace={(workspaceId) => {
+        void removeWorkspace(workspaceId);
       }}
     />
   );

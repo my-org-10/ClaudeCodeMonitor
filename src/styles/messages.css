@@ -258,6 +258,10 @@
   font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
 }
 
+.message .markdown :not(pre) > code {
+  color: #b08cff;
+}
+
 .markdown ul,
 .markdown ol {
   padding-left: 14px;
