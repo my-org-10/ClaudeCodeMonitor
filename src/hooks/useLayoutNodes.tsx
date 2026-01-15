@@ -65,7 +65,7 @@ type LayoutNodesOptions = {
   ) => void;
   onOpenSettings: () => void;
   onOpenDebug: () => void;
-  hasDebugAlerts: boolean;
+  showDebugButton: boolean;
   onAddWorkspace: () => void;
   onSelectHome: () => void;
   onSelectWorkspace: (workspaceId: string) => void;
@@ -213,7 +213,7 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
       accountRateLimits={options.activeRateLimits}
       onOpenSettings={options.onOpenSettings}
       onOpenDebug={options.onOpenDebug}
-      hasDebugAlerts={options.hasDebugAlerts}
+      showDebugButton={options.showDebugButton}
       onAddWorkspace={options.onAddWorkspace}
       onSelectHome={options.onSelectHome}
       onSelectWorkspace={options.onSelectWorkspace}

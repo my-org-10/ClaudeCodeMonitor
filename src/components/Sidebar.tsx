@@ -20,7 +20,7 @@ type SidebarProps = {
   accountRateLimits: RateLimitSnapshot | null;
   onOpenSettings: () => void;
   onOpenDebug: () => void;
-  hasDebugAlerts: boolean;
+  showDebugButton: boolean;
   onAddWorkspace: () => void;
   onSelectHome: () => void;
   onSelectWorkspace: (id: string) => void;
@@ -44,7 +44,7 @@ export function Sidebar({
   accountRateLimits,
   onOpenSettings,
   onOpenDebug,
-  hasDebugAlerts,
+  showDebugButton,
   onAddWorkspace,
   onSelectHome,
   onSelectWorkspace,
@@ -733,7 +733,7 @@ export function Sidebar({
         >
           <Settings size={14} aria-hidden />
         </button>
-        {hasDebugAlerts && (
+        {showDebugButton && (
           <button
             className="ghost sidebar-corner-button"
             type="button"

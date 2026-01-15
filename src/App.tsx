@@ -125,7 +125,7 @@ function MainApp() {
     debugOpen,
     setDebugOpen,
     debugEntries,
-    hasDebugAlerts,
+    showDebugButton,
     addDebugEntry,
     handleCopyDebug,
     clearDebugEntries
@@ -619,7 +619,7 @@ function MainApp() {
     handleApprovalDecision,
     onOpenSettings: handleOpenSettings,
     onOpenDebug: handleDebugClick,
-    hasDebugAlerts,
+    showDebugButton,
     onAddWorkspace: handleAddWorkspace,
     onSelectHome: selectHome,
     onSelectWorkspace: (workspaceId) => {

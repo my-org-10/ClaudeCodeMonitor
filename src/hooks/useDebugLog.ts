@@ -4,9 +4,10 @@ import type { DebugEntry } from "../types";
 const MAX_DEBUG_ENTRIES = 200;
 
 export function useDebugLog() {
-  const [debugOpen, setDebugOpen] = useState(false);
+  const [debugOpen, setDebugOpenState] = useState(false);
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const [hasDebugAlerts, setHasDebugAlerts] = useState(false);
+  const [debugPinned, setDebugPinned] = useState(false);
 
   const shouldLogEntry = useCallback((entry: DebugEntry) => {
     if (entry.source === "error" || entry.source === "stderr") {
@@ -59,11 +60,27 @@ export function useDebugLog() {
     setHasDebugAlerts(false);
   }, []);
 
+  const setDebugOpen = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      setDebugOpenState((prev) => {
+        const resolved = typeof next === "function" ? next(prev) : next;
+        if (resolved) {
+          setDebugPinned(true);
+        }
+        return resolved;
+      });
+    },
+    [],
+  );
+
+  const showDebugButton = hasDebugAlerts || debugOpen || debugPinned;
+
   return {
     debugOpen,
     setDebugOpen,
     debugEntries,
     hasDebugAlerts,
+    showDebugButton,
     addDebugEntry,
     handleCopyDebug,
     clearDebugEntries,
