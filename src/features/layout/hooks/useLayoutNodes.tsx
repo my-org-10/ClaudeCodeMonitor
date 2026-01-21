@@ -1,5 +1,5 @@
-import type { MouseEvent, ReactNode, RefObject } from "react";
-import { ArrowLeft } from "lucide-react";
+import type { DragEvent, MouseEvent, ReactNode, RefObject } from "react";
+import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left";
 import { Sidebar } from "../../app/components/Sidebar";
 import { Home } from "../../home/components/Home";
 import { MainHeader } from "../../app/components/MainHeader";
@@ -87,6 +87,7 @@ type LayoutNodesOptions = {
     workspaces: WorkspaceInfo[];
   }>;
   hasWorkspaceGroups: boolean;
+  deletingWorktreeIds: Set<string>;
   threadsByWorkspace: Record<string, ThreadSummary[]>;
   threadParentById: Record<string, string>;
   threadStatusById: Record<string, ThreadActivityStatus>;
@@ -130,6 +131,13 @@ type LayoutNodesOptions = {
   onDeleteWorktree: (workspaceId: string) => void;
   onLoadOlderThreads: (workspaceId: string) => void;
   onReloadWorkspaceThreads: (workspaceId: string) => void;
+  workspaceDropTargetRef: RefObject<HTMLElement | null>;
+  isWorkspaceDropActive: boolean;
+  workspaceDropText: string;
+  onWorkspaceDragOver: (event: DragEvent<HTMLElement>) => void;
+  onWorkspaceDragEnter: (event: DragEvent<HTMLElement>) => void;
+  onWorkspaceDragLeave: (event: DragEvent<HTMLElement>) => void;
+  onWorkspaceDrop: (event: DragEvent<HTMLElement>) => void;
   updaterState: UpdateState;
   onUpdate: () => void;
   onDismissUpdate: () => void;
@@ -233,6 +241,7 @@ type LayoutNodesOptions = {
   onSelectGitRoot: (path: string) => void;
   onClearGitRoot: () => void;
   onPickGitRoot: () => void | Promise<void>;
+  onStageGitAll: () => Promise<void>;
   onStageGitFile: (path: string) => Promise<void>;
   onUnstageGitFile: (path: string) => Promise<void>;
   onRevertGitFile: (path: string) => Promise<void>;
@@ -376,6 +385,7 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
       workspaces={options.workspaces}
       groupedWorkspaces={options.groupedWorkspaces}
       hasWorkspaceGroups={options.hasWorkspaceGroups}
+      deletingWorktreeIds={options.deletingWorktreeIds}
       threadsByWorkspace={options.threadsByWorkspace}
       threadParentById={options.threadParentById}
       threadStatusById={options.threadStatusById}
@@ -408,6 +418,13 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
       onDeleteWorktree={options.onDeleteWorktree}
       onLoadOlderThreads={options.onLoadOlderThreads}
       onReloadWorkspaceThreads={options.onReloadWorkspaceThreads}
+      workspaceDropTargetRef={options.workspaceDropTargetRef}
+      isWorkspaceDropActive={options.isWorkspaceDropActive}
+      workspaceDropText={options.workspaceDropText}
+      onWorkspaceDragOver={options.onWorkspaceDragOver}
+      onWorkspaceDragEnter={options.onWorkspaceDragEnter}
+      onWorkspaceDragLeave={options.onWorkspaceDragLeave}
+      onWorkspaceDrop={options.onWorkspaceDrop}
     />
   );
 
@@ -649,6 +666,7 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
         onSelectGitRoot={options.onSelectGitRoot}
         onClearGitRoot={options.onClearGitRoot}
         onPickGitRoot={options.onPickGitRoot}
+        onStageAllChanges={options.onStageGitAll}
         onStageFile={options.onStageGitFile}
         onUnstageFile={options.onUnstageGitFile}
         onRevertFile={options.onRevertGitFile}

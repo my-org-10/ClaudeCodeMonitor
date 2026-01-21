@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import * as Sentry from "@sentry/react";
 import type {
   ApprovalRequest,
   AppServerEvent,
@@ -1039,6 +1040,7 @@ export function useThreads({
       handleItemUpdate,
       handleTerminalInteraction,
       handleToolOutputDelta,
+      handleTerminalInteraction,
       markProcessing,
       onDebug,
       recordThreadActivity,
@@ -1075,6 +1077,13 @@ export function useThreads({
           dispatch({ type: "ensureThread", workspaceId, threadId });
           if (shouldActivate) {
             dispatch({ type: "setActiveThreadId", workspaceId, threadId });
+            Sentry.metrics.count("thread_switched", 1, {
+              attributes: {
+                workspace_id: workspaceId,
+                thread_id: threadId,
+                reason: "start",
+              },
+            });
           }
           loadedThreads.current[threadId] = true;
           return threadId;
@@ -1568,6 +1577,17 @@ export function useThreads({
         }
         finalText = promptExpansion?.expanded ?? messageText;
       }
+      Sentry.metrics.count("prompt_sent", 1, {
+        attributes: {
+          workspace_id: workspace.id,
+          thread_id: threadId,
+          has_images: images.length > 0 ? "true" : "false",
+          text_length: String(finalText.length),
+          model: model ?? "unknown",
+          effort: effort ?? "unknown",
+          collaboration_mode: collaborationMode ?? "unknown",
+        },
+      });
       recordThreadActivity(workspace.id, threadId);
       const hasCustomName = Boolean(getCustomName(workspace.id, threadId));
       dispatch({
@@ -1902,6 +1922,13 @@ export function useThreads({
       }
       dispatch({ type: "setActiveThreadId", workspaceId: targetId, threadId });
       if (threadId) {
+        Sentry.metrics.count("thread_switched", 1, {
+          attributes: {
+            workspace_id: targetId,
+            thread_id: threadId,
+            reason: "select",
+          },
+        });
         void resumeThreadForWorkspace(targetId, threadId, true);
       }
     },
