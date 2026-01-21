@@ -38,6 +38,7 @@ import {
   isReviewingFromThread,
   mergeThreadItems,
   previewThreadName,
+  shouldHideSubagentToolItem,
 } from "../../../utils/threadItems";
 import { expandCustomPromptText } from "../../../utils/customPrompts";
 import { initialState, threadReducer } from "./useThreadsReducer";
@@ -726,6 +727,10 @@ export function useThreads({
         dispatch({ type: "markReviewing", threadId, isReviewing: false });
         markProcessing(threadId, false);
       }
+      if (shouldHideSubagentToolItem(threadId, item)) {
+        safeMessageActivity();
+        return;
+      }
       const converted = buildConversationItem(item);
       if (converted) {
         dispatch({ type: "upsertItem", threadId, item: converted });
@@ -964,6 +969,23 @@ export function useThreads({
         );
         dispatch({ type: "setThreadPlan", threadId, plan: normalized });
       },
+      onThreadCreated: (workspaceId: string, thread: Record<string, unknown>) => {
+        const threadId = asString(thread?.id ?? "");
+        if (!threadId) {
+          return;
+        }
+        dispatch({ type: "ensureThread", workspaceId, threadId });
+        const parentId = asString(thread?.parentId ?? thread?.parent_id ?? "");
+        if (parentId) {
+          updateThreadParent(parentId, [threadId]);
+        }
+        const preview = asString(thread?.preview ?? "").trim();
+        const customName = getCustomName(workspaceId, threadId);
+        if (!customName && preview) {
+          const name = preview.length > 38 ? `${preview.slice(0, 38)}…` : preview;
+          dispatch({ type: "setThreadName", workspaceId, threadId, name });
+        }
+      },
       onThreadTokenUsageUpdated: (
         workspaceId: string,
         threadId: string,
@@ -1020,6 +1042,7 @@ export function useThreads({
       markProcessing,
       onDebug,
       recordThreadActivity,
+      updateThreadParent,
       pushThreadErrorMessage,
       safeMessageActivity,
     ],
