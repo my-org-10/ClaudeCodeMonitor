@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import * as Sentry from "@sentry/react";
 import type {
   AppSettings,
   DebugEntry,
@@ -6,12 +7,13 @@ import type {
   WorkspaceInfo,
   WorkspaceSettings,
 } from "../../../types";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
   addClone as addCloneService,
   addWorkspace as addWorkspaceService,
   addWorktree as addWorktreeService,
   connectWorkspace as connectWorkspaceService,
+  isWorkspacePathDir as isWorkspacePathDirService,
   listWorkspaces,
   pickWorkspacePath,
   removeWorkspace as removeWorkspaceService,
@@ -76,6 +78,9 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
+  const [deletingWorktreeIds, setDeletingWorktreeIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const { onDebug, defaultClaudeBin, appSettings, onUpdateAppSettings } = options;
 
   const refreshWorkspaces = useCallback(async () => {
@@ -205,34 +210,65 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
     [getWorkspaceGroupId, workspaceById, workspaceGroupById],
   );
 
-  async function addWorkspace() {
+  const addWorkspaceFromPath = useCallback(
+    async (path: string) => {
+      const selection = path.trim();
+      if (!selection) {
+        return null;
+      }
+      onDebug?.({
+        id: `${Date.now()}-client-add-workspace`,
+        timestamp: Date.now(),
+        source: "client",
+        label: "workspace/add",
+        payload: { path: selection },
+      });
+      try {
+        const workspace = await addWorkspaceService(selection, defaultClaudeBin ?? null);
+        setWorkspaces((prev) => [...prev, workspace]);
+        setActiveWorkspaceId(workspace.id);
+        Sentry.metrics.count("workspace_added", 1, {
+          attributes: {
+            workspace_id: workspace.id,
+            workspace_kind: workspace.kind ?? "main",
+          },
+        });
+        return workspace;
+      } catch (error) {
+        onDebug?.({
+          id: `${Date.now()}-client-add-workspace-error`,
+          timestamp: Date.now(),
+          source: "error",
+          label: "workspace/add error",
+          payload: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    },
+    [defaultClaudeBin, onDebug],
+  );
+
+  const addWorkspace = useCallback(async () => {
     const selection = await pickWorkspacePath();
     if (!selection) {
       return null;
     }
-    onDebug?.({
-      id: `${Date.now()}-client-add-workspace`,
-      timestamp: Date.now(),
-      source: "client",
-      label: "workspace/add",
-      payload: { path: selection },
-    });
-    try {
-      const workspace = await addWorkspaceService(selection, defaultClaudeBin ?? null);
-      setWorkspaces((prev) => [...prev, workspace]);
-      setActiveWorkspaceId(workspace.id);
-      return workspace;
-    } catch (error) {
-      onDebug?.({
-        id: `${Date.now()}-client-add-workspace-error`,
-        timestamp: Date.now(),
-        source: "error",
-        label: "workspace/add error",
-        payload: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
+    return addWorkspaceFromPath(selection);
+  }, [addWorkspaceFromPath]);
+
+  const filterWorkspacePaths = useCallback(async (paths: string[]) => {
+    const trimmed = paths.map((path) => path.trim()).filter(Boolean);
+    if (trimmed.length === 0) {
+      return [];
     }
-  }
+    const checks = await Promise.all(
+      trimmed.map(async (path) => ({
+        path,
+        isDir: await isWorkspacePathDirService(path),
+      })),
+    );
+    return checks.filter((entry) => entry.isDir).map((entry) => entry.path);
+  }, []);
 
   async function addWorktreeAgent(parent: WorkspaceInfo, branch: string) {
     const trimmed = branch.trim();
@@ -250,6 +286,12 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
       const workspace = await addWorktreeService(parent.id, trimmed);
       setWorkspaces((prev) => [...prev, workspace]);
       setActiveWorkspaceId(workspace.id);
+      Sentry.metrics.count("worktree_agent_created", 1, {
+        attributes: {
+          workspace_id: workspace.id,
+          parent_id: parent.id,
+        },
+      });
       return workspace;
     } catch (error) {
       onDebug?.({
@@ -291,6 +333,12 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
       const workspace = await addCloneService(source.id, trimmedFolder, trimmedName);
       setWorkspaces((prev) => [...prev, workspace]);
       setActiveWorkspaceId(workspace.id);
+      Sentry.metrics.count("clone_agent_created", 1, {
+        attributes: {
+          workspace_id: workspace.id,
+          parent_id: source.id,
+        },
+      });
       return workspace;
     } catch (error) {
       onDebug?.({
@@ -652,6 +700,11 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
       return;
     }
 
+    setDeletingWorktreeIds((prev) => {
+      const next = new Set(prev);
+      next.add(workspaceId);
+      return next;
+    });
     onDebug?.({
       id: `${Date.now()}-client-remove-worktree`,
       timestamp: Date.now(),
@@ -664,14 +717,24 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
       setWorkspaces((prev) => prev.filter((entry) => entry.id !== workspaceId));
       setActiveWorkspaceId((prev) => (prev === workspaceId ? null : prev));
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       onDebug?.({
         id: `${Date.now()}-client-remove-worktree-error`,
         timestamp: Date.now(),
         source: "error",
         label: "worktree/remove error",
-        payload: error instanceof Error ? error.message : String(error),
+        payload: errorMessage,
       });
-      throw error;
+      void message(errorMessage, {
+        title: "Delete worktree failed",
+        kind: "error",
+      });
+    } finally {
+      setDeletingWorktreeIds((prev) => {
+        const next = new Set(prev);
+        next.delete(workspaceId);
+        return next;
+      });
     }
   }
 
@@ -760,6 +823,8 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
     activeWorkspaceId,
     setActiveWorkspaceId,
     addWorkspace,
+    addWorkspaceFromPath,
+    filterWorkspacePaths,
     addCloneAgent,
     addWorktreeAgent,
     connectWorkspace,
@@ -775,6 +840,7 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
     removeWorktree,
     renameWorktree,
     renameWorktreeUpstream,
+    deletingWorktreeIds,
     hasLoaded,
     refreshWorkspaces,
   };
