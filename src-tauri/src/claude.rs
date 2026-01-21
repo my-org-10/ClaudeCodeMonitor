@@ -729,6 +729,7 @@ async fn run_claude_turn(
     command.arg("--output-format").arg("stream-json");
     command.arg("--verbose");
     command.arg("--include-partial-messages");
+    command.arg("--max-thinking-tokens").arg("31999");
     command.arg("--add-dir").arg(&session.entry.path);
 
     if let Some(model) = model {
@@ -784,8 +785,8 @@ async fn run_claude_turn(
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut tool_inputs: HashMap<String, Value> = HashMap::new();
     let mut tool_counter: usize = 0;
+    let mut thinking_counter: usize = 0;
     let mut subagent_tool_ids: HashSet<String> = HashSet::new();
-    let mut active_subagent_tasks: usize = 0;
     while let Ok(Some(line)) = reader.next_line().await {
         if line.trim().is_empty() {
             continue;
@@ -794,6 +795,10 @@ async fn run_claude_turn(
             Ok(value) => value,
             Err(_) => continue,
         };
+        // Skip subagent events - they have parent_tool_use_id set
+        if value.get("parent_tool_use_id").and_then(|v| v.as_str()).is_some() {
+            continue;
+        }
         let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if event_type == "assistant" {
             if let Some(uuid) = value.get("uuid").and_then(|v| v.as_str()) {
@@ -804,7 +809,32 @@ async fn run_claude_turn(
             if let Some(message) = value.get("message") {
                 if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                     for entry in content {
-                        if entry.get("type").and_then(|v| v.as_str()) != Some("tool_use") {
+                        let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if entry_type == "thinking" {
+                            if let Some(thinking) = entry.get("thinking").and_then(|v| v.as_str()) {
+                                let trimmed = thinking.trim();
+                                if !trimmed.is_empty() {
+                                    thinking_counter += 1;
+                                    let thinking_id = format!("{item_id}-thinking-{thinking_counter}");
+                                    emit_event(
+                                        &event_sink,
+                                        workspace_id,
+                                        "item/started",
+                                        json!({
+                                            "threadId": thread_id,
+                                            "item": {
+                                                "id": thinking_id,
+                                                "type": "reasoning",
+                                                "summary": "",
+                                                "content": trimmed,
+                                            }
+                                        }),
+                                    );
+                                }
+                            }
+                            continue;
+                        }
+                        if entry_type != "tool_use" {
                             continue;
                         }
                         let tool_id = entry
@@ -824,13 +854,6 @@ async fn run_claude_turn(
                             if is_subagent_tool {
                                 subagent_tool_ids.insert(tool_id.to_string());
                             }
-                        }
-                        // Skip tools invoked by subagents (nested inside Task execution)
-                        if active_subagent_tasks > 0 && !is_subagent_tool {
-                            continue;
-                        }
-                        if is_subagent_tool {
-                            active_subagent_tasks += 1;
                         }
                         let item_id = if tool_id.is_empty() {
                             tool_counter += 1;
@@ -914,21 +937,6 @@ async fn run_claude_turn(
                             .get(tool_use_id)
                             .cloned()
                             .unwrap_or(Value::Null);
-                        let is_subagent_result = is_subagent_tool_result(
-                            &command,
-                            &tool_input,
-                            &value,
-                            &subagent_tool_ids,
-                            tool_use_id,
-                        );
-                        // Skip tool results from inside subagents (but not the Task result itself)
-                        if active_subagent_tasks > 0 && !is_subagent_result {
-                            continue;
-                        }
-                        if is_subagent_result {
-                            // Task tool completed, decrement active count
-                            active_subagent_tasks = active_subagent_tasks.saturating_sub(1);
-                        }
                         output = collapse_subagent_output(output, &command, &tool_input, &value);
                         let item_id = if tool_use_id.is_empty() {
                             tool_counter += 1;
@@ -956,13 +964,10 @@ async fn run_claude_turn(
                 }
             }
         } else if event_type == "result" {
-            eprintln!("[DEBUG] Got result event");
             if let Some(usage) = value.get("usage") {
-                eprintln!("[DEBUG] Found usage in result: {:?}", usage);
                 last_usage = Some(usage.clone());
             }
             if let Some(model_usage) = value.get("modelUsage") {
-                eprintln!("[DEBUG] Found modelUsage in result: {:?}", model_usage);
                 last_model_usage = Some(model_usage.clone());
             }
         }
@@ -998,9 +1003,7 @@ async fn run_claude_turn(
         });
     }
 
-    eprintln!("[DEBUG] End of turn - last_usage: {:?}, last_model_usage: {:?}", last_usage.is_some(), last_model_usage.is_some());
     if let Some(usage) = last_usage.and_then(|u| format_token_usage(u, last_model_usage.as_ref())) {
-        eprintln!("[DEBUG] Emitting tokenUsage: {:?}", usage);
         emit_event(
             &event_sink,
             workspace_id,
@@ -1010,8 +1013,6 @@ async fn run_claude_turn(
                 "tokenUsage": usage,
             }),
         );
-    } else {
-        eprintln!("[DEBUG] No token usage to emit - format_token_usage returned None");
     }
 
     emit_event(
@@ -1194,13 +1195,9 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                     .get(tool_use_id)
                     .cloned()
                     .unwrap_or(Value::Null);
-                if is_subagent_tool_result(
-                    &command,
-                    &tool_input,
-                    &value,
-                    &subagent_tool_ids,
-                    tool_use_id,
-                ) {
+                // Only skip nested subagent tool results (those with agentId)
+                // Task tool results should be shown - they don't have agentId
+                if extract_subagent_id(&value).is_some() {
                     continue;
                 }
                 output = collapse_subagent_output(output, &command, &tool_input, &value);
@@ -1275,9 +1272,8 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                                 subagent_tool_ids.insert(tool_id.to_string());
                             }
                         }
-                        if is_subagent_tool {
-                            continue;
-                        }
+                        // Don't skip Task tools - we want to show them
+                        // (subagent_tool_ids tracking above is still needed for collapsing output)
                         let id = if tool_id.is_empty() {
                             format!("{thread_id}-tool-{}", items.len())
                         } else {
@@ -2171,19 +2167,6 @@ fn is_subagent_task(command: &str, tool_input: &Value) -> bool {
         || tool_input.get("subagentType").is_some()
 }
 
-fn is_subagent_tool_result(
-    command: &str,
-    tool_input: &Value,
-    value: &Value,
-    subagent_tool_ids: &HashSet<String>,
-    tool_use_id: &str,
-) -> bool {
-    if !tool_use_id.is_empty() && subagent_tool_ids.contains(tool_use_id) {
-        return true;
-    }
-    is_subagent_task(command, tool_input) || extract_subagent_id(value).is_some()
-}
-
 fn has_user_message_content(content: &[Value]) -> bool {
     content.iter().any(|entry| {
         matches!(
@@ -2194,10 +2177,7 @@ fn has_user_message_content(content: &[Value]) -> bool {
 }
 
 fn format_token_usage(raw: Value, model_usage: Option<&Value>) -> Option<Value> {
-    eprintln!("[DEBUG] format_token_usage called with raw: {:?}", raw);
-    eprintln!("[DEBUG] model_usage: {:?}", model_usage);
     let Value::Object(map) = raw else {
-        eprintln!("[DEBUG] raw is not an object, returning None");
         return None;
     };
     let input_tokens = usage_number(&map, &["input_tokens", "inputTokens"]);
