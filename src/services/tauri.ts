@@ -56,6 +56,10 @@ export async function addWorkspace(
   return invoke<WorkspaceInfo>("add_workspace", { path, claude_bin });
 }
 
+export async function isWorkspacePathDir(path: string): Promise<boolean> {
+  return invoke<boolean>("is_workspace_path_dir", { path });
+}
+
 export async function addClone(
   sourceWorkspaceId: string,
   copiesFolder: string,
@@ -405,6 +409,17 @@ export async function getAppSettings(): Promise<AppSettings> {
 
 export async function updateAppSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>("update_app_settings", { settings });
+}
+
+type MenuAcceleratorUpdate = {
+  id: string;
+  accelerator: string | null;
+};
+
+export async function setMenuAccelerators(
+  updates: MenuAcceleratorUpdate[],
+): Promise<void> {
+  return invoke("menu_set_accelerators", { updates });
 }
 
 export async function runClaudeDoctor(

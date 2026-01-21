@@ -158,12 +158,20 @@ impl DaemonState {
         result
     }
 
+    async fn is_workspace_path_dir(&self, path: String) -> bool {
+        PathBuf::from(&path).is_dir()
+    }
+
     async fn add_workspace(
         &self,
         path: String,
         claude_bin: Option<String>,
         _client_version: String,
     ) -> Result<WorkspaceInfo, String> {
+        if !PathBuf::from(&path).is_dir() {
+            return Err("Workspace path must be a folder.".to_string());
+        }
+
         let name = PathBuf::from(&path)
             .file_name()
             .and_then(|s| s.to_str())
@@ -333,8 +341,18 @@ impl DaemonState {
                 )
                 .await
                 {
-                    failures.push((child.id.clone(), err));
-                    continue;
+                    if is_missing_worktree_error(&err) {
+                        if let Err(fs_err) = std::fs::remove_dir_all(&child_path) {
+                            failures.push((
+                                child.id.clone(),
+                                format!("Failed to remove worktree folder: {fs_err}"),
+                            ));
+                            continue;
+                        }
+                    } else {
+                        failures.push((child.id.clone(), err));
+                        continue;
+                    }
                 }
             }
 
@@ -391,11 +409,22 @@ impl DaemonState {
         let parent_path = PathBuf::from(&parent.path);
         let entry_path = PathBuf::from(&entry.path);
         if entry_path.exists() {
-            run_git_command(
+            if let Err(err) = run_git_command(
                 &parent_path,
                 &["worktree", "remove", "--force", &entry.path],
             )
-            .await?;
+            .await
+            {
+                if is_missing_worktree_error(&err) {
+                    if entry_path.exists() {
+                        std::fs::remove_dir_all(&entry_path).map_err(|fs_err| {
+                            format!("Failed to remove worktree folder: {fs_err}")
+                        })?;
+                    }
+                } else {
+                    return Err(err);
+                }
+            }
         }
         let _ = run_git_command(&parent_path, &["worktree", "prune", "--expire", "now"]).await;
 
@@ -2241,6 +2270,10 @@ async fn run_git_command(repo_path: &PathBuf, args: &[&str]) -> Result<String, S
     }
 }
 
+fn is_missing_worktree_error(error: &str) -> bool {
+    error.contains("is not a working tree")
+}
+
 async fn git_branch_exists(repo_path: &PathBuf, branch: &str) -> Result<bool, String> {
     let status = Command::new("git")
         .args(["show-ref", "--verify", &format!("refs/heads/{branch}")])
@@ -2642,6 +2675,11 @@ async fn handle_rpc_request(
         "list_workspaces" => {
             let workspaces = state.list_workspaces().await;
             serde_json::to_value(workspaces).map_err(|err| err.to_string())
+        }
+        "is_workspace_path_dir" => {
+            let path = parse_string(&params, "path")?;
+            let is_dir = state.is_workspace_path_dir(path).await;
+            serde_json::to_value(is_dir).map_err(|err| err.to_string())
         }
         "add_workspace" => {
             let path = parse_string(&params, "path")?;
