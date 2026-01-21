@@ -783,6 +783,7 @@ async fn run_claude_turn(
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut tool_inputs: HashMap<String, Value> = HashMap::new();
     let mut tool_counter: usize = 0;
+    let mut subagent_tool_ids: HashSet<String> = HashSet::new();
     while let Ok(Some(line)) = reader.next_line().await {
         if line.trim().is_empty() {
             continue;
@@ -814,9 +815,16 @@ async fn run_claude_turn(
                             .unwrap_or("Tool")
                             .to_string();
                         let tool_input = entry.get("input").cloned().unwrap_or(Value::Null);
+                        let is_subagent_tool = is_subagent_task(&tool_name, &tool_input);
                         if !tool_id.is_empty() {
                             tool_names.insert(tool_id.to_string(), tool_name.clone());
                             tool_inputs.insert(tool_id.to_string(), tool_input.clone());
+                            if is_subagent_tool {
+                                subagent_tool_ids.insert(tool_id.to_string());
+                            }
+                        }
+                        if is_subagent_tool {
+                            continue;
                         }
                         let item_id = if tool_id.is_empty() {
                             tool_counter += 1;
@@ -900,6 +908,15 @@ async fn run_claude_turn(
                             .get(tool_use_id)
                             .cloned()
                             .unwrap_or(Value::Null);
+                        if is_subagent_tool_result(
+                            &command,
+                            &tool_input,
+                            &value,
+                            &subagent_tool_ids,
+                            tool_use_id,
+                        ) {
+                            continue;
+                        }
                         output = collapse_subagent_output(output, &command, &tool_input, &value);
                         let item_id = if tool_use_id.is_empty() {
                             tool_counter += 1;
@@ -1078,6 +1095,7 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut tool_inputs: HashMap<String, Value> = HashMap::new();
     let mut tool_item_indices: HashMap<String, usize> = HashMap::new();
+    let mut subagent_tool_ids: HashSet<String> = HashSet::new();
     let mut preview: Option<String> = None;
     let mut created_at: Option<i64> = None;
     let mut updated_at: Option<i64> = None;
@@ -1154,6 +1172,15 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                     .get(tool_use_id)
                     .cloned()
                     .unwrap_or(Value::Null);
+                if is_subagent_tool_result(
+                    &command,
+                    &tool_input,
+                    &value,
+                    &subagent_tool_ids,
+                    tool_use_id,
+                ) {
+                    continue;
+                }
                 output = collapse_subagent_output(output, &command, &tool_input, &value);
                 let id = if tool_use_id.is_empty() {
                     format!("{thread_id}-tool-result-{}", items.len())
@@ -1218,9 +1245,16 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                             .unwrap_or("Tool")
                             .to_string();
                         let tool_input = entry.get("input").cloned().unwrap_or(Value::Null);
+                        let is_subagent_tool = is_subagent_task(&tool_name, &tool_input);
                         if !tool_id.is_empty() {
                             tool_names.insert(tool_id.to_string(), tool_name.clone());
                             tool_inputs.insert(tool_id.to_string(), tool_input.clone());
+                            if is_subagent_tool {
+                                subagent_tool_ids.insert(tool_id.to_string());
+                            }
+                        }
+                        if is_subagent_tool {
+                            continue;
                         }
                         let id = if tool_id.is_empty() {
                             format!("{thread_id}-tool-{}", items.len())
@@ -2107,6 +2141,25 @@ fn collapse_subagent_output(
         .map(|id| format!("Subagent {id}"))
         .unwrap_or_else(|| "Subagent".to_string());
     format!("{agent_label} output is available in its thread.")
+}
+
+fn is_subagent_task(command: &str, tool_input: &Value) -> bool {
+    command.eq_ignore_ascii_case("task")
+        || tool_input.get("subagent_type").is_some()
+        || tool_input.get("subagentType").is_some()
+}
+
+fn is_subagent_tool_result(
+    command: &str,
+    tool_input: &Value,
+    value: &Value,
+    subagent_tool_ids: &HashSet<String>,
+    tool_use_id: &str,
+) -> bool {
+    if !tool_use_id.is_empty() && subagent_tool_ids.contains(tool_use_id) {
+        return true;
+    }
+    is_subagent_task(command, tool_input) || extract_subagent_id(value).is_some()
 }
 
 fn has_user_message_content(content: &[Value]) -> bool {

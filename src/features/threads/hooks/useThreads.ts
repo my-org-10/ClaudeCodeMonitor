@@ -38,6 +38,7 @@ import {
   isReviewingFromThread,
   mergeThreadItems,
   previewThreadName,
+  shouldHideSubagentToolItem,
 } from "../../../utils/threadItems";
 import { expandCustomPromptText } from "../../../utils/customPrompts";
 import { initialState, threadReducer } from "./useThreadsReducer";
@@ -725,6 +726,10 @@ export function useThreads({
       } else if (itemType === "exitedReviewMode") {
         dispatch({ type: "markReviewing", threadId, isReviewing: false });
         markProcessing(threadId, false);
+      }
+      if (shouldHideSubagentToolItem(threadId, item)) {
+        safeMessageActivity();
+        return;
       }
       const converted = buildConversationItem(item);
       if (converted) {

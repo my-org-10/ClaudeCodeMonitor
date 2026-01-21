@@ -529,7 +529,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
         ...state,
         itemsByThread: {
           ...state.itemsByThread,
-          [action.threadId]: prepareThreadItems([...list, message]),
+          [action.threadId]: prepareThreadItems([...list, message], action.threadId),
         },
         threadsByWorkspace: {
           ...state.threadsByWorkspace,
@@ -549,7 +549,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
         ...state,
         itemsByThread: {
           ...state.itemsByThread,
-          [action.threadId]: prepareThreadItems([...list, message]),
+          [action.threadId]: prepareThreadItems([...list, message], action.threadId),
         },
       };
     }
@@ -583,7 +583,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
           text: action.delta,
         });
       }
-      const updatedItems = prepareThreadItems(list);
+      const updatedItems = prepareThreadItems(list, action.threadId);
       const nextThreadsByWorkspace = maybeRenameThreadFromAgent({
         workspaceId: action.workspaceId,
         threadId: action.threadId,
@@ -618,7 +618,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
           text: action.text,
         });
       }
-      const updatedItems = prepareThreadItems(list);
+      const updatedItems = prepareThreadItems(list, action.threadId);
       const nextThreadsByWorkspace = maybeRenameThreadFromAgent({
         workspaceId: action.workspaceId,
         threadId: action.threadId,
@@ -657,7 +657,10 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
         ...state,
         itemsByThread: {
           ...state.itemsByThread,
-          [action.threadId]: prepareThreadItems(upsertItem(list, nextItem)),
+          [action.threadId]: prepareThreadItems(
+            upsertItem(list, nextItem),
+            action.threadId,
+          ),
         },
       };
     }
@@ -666,7 +669,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
         ...state,
         itemsByThread: {
           ...state.itemsByThread,
-          [action.threadId]: prepareThreadItems(action.items),
+          [action.threadId]: prepareThreadItems(action.items, action.threadId),
         },
       };
     case "setLastAgentMessage":
@@ -709,7 +712,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
         ...state,
         itemsByThread: {
           ...state.itemsByThread,
-          [action.threadId]: prepareThreadItems(next),
+          [action.threadId]: prepareThreadItems(next, action.threadId),
         },
       };
     }
@@ -740,7 +743,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
         ...state,
         itemsByThread: {
           ...state.itemsByThread,
-          [action.threadId]: prepareThreadItems(next),
+          [action.threadId]: prepareThreadItems(next, action.threadId),
         },
       };
     }
@@ -761,7 +764,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
         ...state,
         itemsByThread: {
           ...state.itemsByThread,
-          [action.threadId]: prepareThreadItems(next),
+          [action.threadId]: prepareThreadItems(next, action.threadId),
         },
       };
     }
