@@ -573,16 +573,12 @@ Changes:\n{diff}"
 #[tauri::command]
 pub(crate) async fn remember_approval_rule(
     workspace_id: String,
-    command: Vec<String>,
+    rule: String,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    let command = command
-        .into_iter()
-        .map(|item| item.trim().to_string())
-        .filter(|item| !item.is_empty())
-        .collect::<Vec<_>>();
-    if command.is_empty() {
-        return Err("empty command".to_string());
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return Err("empty rule".to_string());
     }
 
     let (entry, parent_path) = {
@@ -600,7 +596,6 @@ pub(crate) async fn remember_approval_rule(
     };
 
     let settings_path = resolve_permissions_path(&entry, parent_path.as_deref())?;
-    let rule = format_permission_rule(&command);
     let mut settings = read_settings_json(&settings_path)?;
     let permissions = settings
         .entry("permissions")
@@ -612,8 +607,8 @@ pub(crate) async fn remember_approval_rule(
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .ok_or("Unable to update permissions".to_string())?;
-    if !allow.iter().any(|item| item.as_str() == Some(&rule)) {
-        allow.push(Value::String(rule));
+    if !allow.iter().any(|item| item.as_str() == Some(rule)) {
+        allow.push(Value::String(rule.to_string()));
     }
     write_settings_json(&settings_path, &settings)?;
 
@@ -2309,11 +2304,6 @@ fn resolve_permissions_path(
     resolve_default_claude_home()
         .map(|home| home.join("settings.json"))
         .ok_or_else(|| "Unable to resolve Claude settings path".to_string())
-}
-
-fn format_permission_rule(command: &[String]) -> String {
-    let joined = command.join(" ");
-    format!("Bash({joined}:*)")
 }
 
 fn read_settings_json(path: &Path) -> Result<Map<String, Value>, String> {

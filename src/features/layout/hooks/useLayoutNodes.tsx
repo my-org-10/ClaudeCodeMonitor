@@ -17,6 +17,7 @@ import { TabBar } from "../../app/components/TabBar";
 import { TabletNav } from "../../app/components/TabletNav";
 import { TerminalDock } from "../../terminal/components/TerminalDock";
 import { TerminalPanel } from "../../terminal/components/TerminalPanel";
+import type { ApprovalRuleInfo } from "../../../utils/approvalRules";
 import type {
   AccessMode,
   ApprovalRequest,
@@ -106,7 +107,7 @@ type LayoutNodesOptions = {
   ) => void;
   handleApprovalRemember: (
     request: ApprovalRequest,
-    command: string[],
+    ruleInfo: ApprovalRuleInfo,
   ) => void;
   onOpenSettings: () => void;
   onOpenDictationSettings?: () => void;

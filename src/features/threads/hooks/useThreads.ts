@@ -15,6 +15,7 @@ import type {
   WorkspaceInfo,
 } from "../../../types";
 import {
+  type ApprovalRuleInfo,
   getApprovalCommandInfo,
   matchesCommandPrefix,
   normalizeCommandTokens,
@@ -1887,9 +1888,9 @@ export function useThreads({
   );
 
   const handleApprovalRemember = useCallback(
-    async (request: ApprovalRequest, command: string[]) => {
+    async (request: ApprovalRequest, ruleInfo: ApprovalRuleInfo) => {
       try {
-        await rememberApprovalRule(request.workspace_id, command);
+        await rememberApprovalRule(request.workspace_id, ruleInfo.rule);
       } catch (error) {
         onDebug?.({
           id: `${Date.now()}-client-approval-rule-error`,
@@ -1900,7 +1901,9 @@ export function useThreads({
         });
       }
 
-      rememberApprovalPrefix(request.workspace_id, command);
+      if (ruleInfo.commandTokens) {
+        rememberApprovalPrefix(request.workspace_id, ruleInfo.commandTokens);
+      }
 
       await respondToServerRequest(
         request.workspace_id,

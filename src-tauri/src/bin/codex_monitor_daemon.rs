@@ -1034,15 +1034,11 @@ impl DaemonState {
     async fn remember_approval_rule(
         &self,
         workspace_id: String,
-        command: Vec<String>,
+        rule: String,
     ) -> Result<Value, String> {
-        let command = command
-            .into_iter()
-            .map(|item| item.trim().to_string())
-            .filter(|item| !item.is_empty())
-            .collect::<Vec<_>>();
-        if command.is_empty() {
-            return Err("empty command".to_string());
+        let rule = rule.trim();
+        if rule.is_empty() {
+            return Err("empty rule".to_string());
         }
 
         let (entry, parent_path) = {
@@ -1060,7 +1056,6 @@ impl DaemonState {
         };
 
         let settings_path = resolve_permissions_path(&entry, parent_path.as_deref())?;
-        let rule = format_permission_rule(&command);
         let mut settings = read_settings_json(&settings_path)?;
         let permissions = settings
             .entry("permissions")
@@ -1072,8 +1067,8 @@ impl DaemonState {
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .ok_or("Unable to update permissions".to_string())?;
-        if !allow.iter().any(|item| item.as_str() == Some(&rule)) {
-            allow.push(Value::String(rule));
+        if !allow.iter().any(|item| item.as_str() == Some(rule)) {
+            allow.push(Value::String(rule.to_string()));
         }
         write_settings_json(&settings_path, &settings)?;
 
@@ -2138,11 +2133,6 @@ fn resolve_permissions_path(
         .ok_or_else(|| "Unable to resolve Claude settings path".to_string())
 }
 
-fn format_permission_rule(command: &[String]) -> String {
-    let joined = command.join(" ");
-    format!("Bash({joined}:*)")
-}
-
 fn read_settings_json(path: &Path) -> Result<Map<String, Value>, String> {
     if !path.exists() {
         return Ok(Map::new());
@@ -2653,10 +2643,6 @@ fn parse_optional_string_array(value: &Value, key: &str) -> Option<Vec<String>> 
     }
 }
 
-fn parse_string_array(value: &Value, key: &str) -> Result<Vec<String>, String> {
-    parse_optional_string_array(value, key).ok_or_else(|| format!("missing `{key}`"))
-}
-
 fn parse_optional_value(value: &Value, key: &str) -> Option<Value> {
     match value {
         Value::Object(map) => map.get(key).cloned(),
@@ -2861,8 +2847,8 @@ async fn handle_rpc_request(
         }
         "remember_approval_rule" => {
             let workspace_id = parse_string(&params, "workspaceId")?;
-            let command = parse_string_array(&params, "command")?;
-            state.remember_approval_rule(workspace_id, command).await
+            let rule = parse_string(&params, "rule")?;
+            state.remember_approval_rule(workspace_id, rule).await
         }
         _ => Err(format!("unknown method: {method}")),
     }

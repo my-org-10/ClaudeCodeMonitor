@@ -1,12 +1,13 @@
 import { useEffect, useMemo } from "react";
 import type { ApprovalRequest, WorkspaceInfo } from "../../../types";
-import { getApprovalCommandInfo } from "../../../utils/approvalRules";
+import type { ApprovalRuleInfo } from "../../../utils/approvalRules";
+import { getApprovalRuleInfo } from "../../../utils/approvalRules";
 
 type ApprovalToastsProps = {
   approvals: ApprovalRequest[];
   workspaces: WorkspaceInfo[];
   onDecision: (request: ApprovalRequest, decision: "accept" | "decline") => void;
-  onRemember?: (request: ApprovalRequest, command: string[]) => void;
+  onRemember?: (request: ApprovalRequest, ruleInfo: ApprovalRuleInfo) => void;
 };
 
 export function ApprovalToasts({
@@ -87,7 +88,7 @@ export function ApprovalToasts({
       {approvals.map((request) => {
         const workspaceName = workspaceLabels.get(request.workspace_id);
         const params = request.params ?? {};
-        const commandInfo = getApprovalCommandInfo(params);
+        const ruleInfo = getApprovalRuleInfo(params, request.method);
         const entries = Object.entries(params);
         return (
           <div
@@ -136,11 +137,11 @@ export function ApprovalToasts({
               >
                 Decline
               </button>
-              {commandInfo && onRemember ? (
+              {ruleInfo && onRemember ? (
                 <button
                   className="ghost approval-toast-remember"
-                  onClick={() => onRemember(request, commandInfo.tokens)}
-                  title={`Allow commands that start with ${commandInfo.preview}`}
+                  onClick={() => onRemember(request, ruleInfo)}
+                  title={ruleInfo.label}
                 >
                   Always allow
                 </button>
