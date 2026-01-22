@@ -573,16 +573,12 @@ Changes:\n{diff}"
 #[tauri::command]
 pub(crate) async fn remember_approval_rule(
     workspace_id: String,
-    command: Vec<String>,
+    rule: String,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    let command = command
-        .into_iter()
-        .map(|item| item.trim().to_string())
-        .filter(|item| !item.is_empty())
-        .collect::<Vec<_>>();
-    if command.is_empty() {
-        return Err("empty command".to_string());
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return Err("empty rule".to_string());
     }
 
     let (entry, parent_path) = {
@@ -600,7 +596,6 @@ pub(crate) async fn remember_approval_rule(
     };
 
     let settings_path = resolve_permissions_path(&entry, parent_path.as_deref())?;
-    let rule = format_permission_rule(&command);
     let mut settings = read_settings_json(&settings_path)?;
     let permissions = settings
         .entry("permissions")
@@ -612,8 +607,8 @@ pub(crate) async fn remember_approval_rule(
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .ok_or("Unable to update permissions".to_string())?;
-    if !allow.iter().any(|item| item.as_str() == Some(&rule)) {
-        allow.push(Value::String(rule));
+    if !allow.iter().any(|item| item.as_str() == Some(rule)) {
+        allow.push(Value::String(rule.to_string()));
     }
     write_settings_json(&settings_path, &settings)?;
 
@@ -662,6 +657,7 @@ Changes:\n{diff}"
         default_bin,
         prompt,
         Some("dontAsk".to_string()),
+        Some("haiku".to_string()),
     )
     .await?;
 
@@ -729,6 +725,7 @@ async fn run_claude_turn(
     command.arg("--output-format").arg("stream-json");
     command.arg("--verbose");
     command.arg("--include-partial-messages");
+    command.arg("--max-thinking-tokens").arg("31999");
     command.arg("--add-dir").arg(&session.entry.path);
 
     if let Some(model) = model {
@@ -780,10 +777,14 @@ async fn run_claude_turn(
     let mut full_text = String::new();
     let mut last_text = String::new();
     let mut last_usage: Option<Value> = None;
+    let mut last_model_usage: Option<Value> = None;
+    let mut last_model: Option<String> = None;
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut tool_inputs: HashMap<String, Value> = HashMap::new();
     let mut tool_counter: usize = 0;
+    let mut thinking_counter: usize = 0;
     let mut subagent_tool_ids: HashSet<String> = HashSet::new();
+    let mut permission_denials_emitted = false;
     while let Ok(Some(line)) = reader.next_line().await {
         if line.trim().is_empty() {
             continue;
@@ -792,6 +793,10 @@ async fn run_claude_turn(
             Ok(value) => value,
             Err(_) => continue,
         };
+        // Skip subagent events - they have parent_tool_use_id set
+        if value.get("parent_tool_use_id").and_then(|v| v.as_str()).is_some() {
+            continue;
+        }
         let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if event_type == "assistant" {
             if let Some(uuid) = value.get("uuid").and_then(|v| v.as_str()) {
@@ -800,9 +805,39 @@ async fn run_claude_turn(
                 }
             }
             if let Some(message) = value.get("message") {
+                if let Some(model) = message.get("model").and_then(|v| v.as_str()) {
+                    if !model.trim().is_empty() {
+                        last_model = Some(model.to_string());
+                    }
+                }
                 if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                     for entry in content {
-                        if entry.get("type").and_then(|v| v.as_str()) != Some("tool_use") {
+                        let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if entry_type == "thinking" {
+                            if let Some(thinking) = entry.get("thinking").and_then(|v| v.as_str()) {
+                                let trimmed = thinking.trim();
+                                if !trimmed.is_empty() {
+                                    thinking_counter += 1;
+                                    let thinking_id = format!("{item_id}-thinking-{thinking_counter}");
+                                    emit_event(
+                                        &event_sink,
+                                        workspace_id,
+                                        "item/started",
+                                        json!({
+                                            "threadId": thread_id,
+                                            "item": {
+                                                "id": thinking_id,
+                                                "type": "reasoning",
+                                                "summary": "",
+                                                "content": trimmed,
+                                            }
+                                        }),
+                                    );
+                                }
+                            }
+                            continue;
+                        }
+                        if entry_type != "tool_use" {
                             continue;
                         }
                         let tool_id = entry
@@ -822,9 +857,6 @@ async fn run_claude_turn(
                             if is_subagent_tool {
                                 subagent_tool_ids.insert(tool_id.to_string());
                             }
-                        }
-                        if is_subagent_tool {
-                            continue;
                         }
                         let item_id = if tool_id.is_empty() {
                             tool_counter += 1;
@@ -908,15 +940,6 @@ async fn run_claude_turn(
                             .get(tool_use_id)
                             .cloned()
                             .unwrap_or(Value::Null);
-                        if is_subagent_tool_result(
-                            &command,
-                            &tool_input,
-                            &value,
-                            &subagent_tool_ids,
-                            tool_use_id,
-                        ) {
-                            continue;
-                        }
                         output = collapse_subagent_output(output, &command, &tool_input, &value);
                         let item_id = if tool_use_id.is_empty() {
                             tool_counter += 1;
@@ -946,6 +969,61 @@ async fn run_claude_turn(
         } else if event_type == "result" {
             if let Some(usage) = value.get("usage") {
                 last_usage = Some(usage.clone());
+            }
+            if let Some(model_usage) = value.get("modelUsage") {
+                last_model_usage = Some(model_usage.clone());
+            }
+            if !permission_denials_emitted {
+                let denials = value
+                    .get("permission_denials")
+                    .or_else(|| value.get("permissionDenials"))
+                    .and_then(|item| item.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|entry| {
+                                let tool_name = entry
+                                    .get("tool_name")
+                                    .or_else(|| entry.get("toolName"))
+                                    .and_then(|item| item.as_str())?
+                                    .trim()
+                                    .to_string();
+                                if tool_name.is_empty() {
+                                    return None;
+                                }
+                                let tool_use_id = entry
+                                    .get("tool_use_id")
+                                    .or_else(|| entry.get("toolUseId"))
+                                    .and_then(|item| item.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let tool_input = entry
+                                    .get("tool_input")
+                                    .or_else(|| entry.get("toolInput"))
+                                    .cloned()
+                                    .unwrap_or(Value::Null);
+                                Some(json!({
+                                    "toolName": tool_name,
+                                    "toolUseId": tool_use_id,
+                                    "toolInput": tool_input,
+                                }))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !denials.is_empty() {
+                    permission_denials_emitted = true;
+                    emit_event(
+                        &event_sink,
+                        workspace_id,
+                        "turn/permissionDenied",
+                        json!({
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "permissionDenials": denials,
+                        }),
+                    );
+                }
             }
         }
     }
@@ -980,7 +1058,7 @@ async fn run_claude_turn(
         });
     }
 
-    if let Some(usage) = last_usage.and_then(format_token_usage) {
+    if let Some(usage) = last_usage.and_then(|u| format_token_usage(u, last_model_usage.as_ref())) {
         emit_event(
             &event_sink,
             workspace_id,
@@ -998,7 +1076,12 @@ async fn run_claude_turn(
         "item/completed",
         json!({
             "threadId": thread_id,
-            "item": { "id": item_id, "type": "agentMessage", "text": full_text },
+            "item": {
+                "id": item_id,
+                "type": "agentMessage",
+                "text": full_text,
+                "model": last_model,
+            },
         }),
     );
     emit_event(
@@ -1023,6 +1106,7 @@ async fn run_claude_prompt_once(
     claude_bin: Option<String>,
     prompt: String,
     permission_mode: Option<String>,
+    model: Option<String>,
 ) -> Result<String, String> {
     let mut command = build_claude_command_with_bin(claude_bin);
     command.current_dir(cwd);
@@ -1032,6 +1116,9 @@ async fn run_claude_prompt_once(
     command.arg("--no-session-persistence");
     if let Some(mode) = permission_mode {
         command.arg("--permission-mode").arg(mode);
+    }
+    if let Some(m) = model {
+        command.arg("--model").arg(m);
     }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -1172,13 +1259,9 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                     .get(tool_use_id)
                     .cloned()
                     .unwrap_or(Value::Null);
-                if is_subagent_tool_result(
-                    &command,
-                    &tool_input,
-                    &value,
-                    &subagent_tool_ids,
-                    tool_use_id,
-                ) {
+                // Only skip nested subagent tool results (those with agentId)
+                // Task tool results should be shown - they don't have agentId
+                if extract_subagent_id(&value).is_some() {
                     continue;
                 }
                 output = collapse_subagent_output(output, &command, &tool_input, &value);
@@ -1253,9 +1336,8 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                                 subagent_tool_ids.insert(tool_id.to_string());
                             }
                         }
-                        if is_subagent_tool {
-                            continue;
-                        }
+                        // Don't skip Task tools - we want to show them
+                        // (subagent_tool_ids tracking above is still needed for collapsing output)
                         let id = if tool_id.is_empty() {
                             format!("{thread_id}-tool-{}", items.len())
                         } else {
@@ -1280,10 +1362,14 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                 }
             }
             if !text.trim().is_empty() {
+                let model = message
+                    .and_then(|message| message.get("model"))
+                    .and_then(|value| value.as_str());
                 items.push(json!({
                     "id": value.get("uuid").and_then(|v| v.as_str()).unwrap_or(thread_id),
                     "type": "agentMessage",
                     "text": text.trim(),
+                    "model": model,
                 }));
             }
         }
@@ -1781,6 +1867,9 @@ fn process_subagent_line(
             .get("uuid")
             .and_then(|v| v.as_str())
             .unwrap_or(thread_id);
+        let model = message
+            .and_then(|message| message.get("model"))
+            .and_then(|value| value.as_str());
         emit_event(
             event_sink,
             workspace_id,
@@ -1791,6 +1880,7 @@ fn process_subagent_line(
                     "id": message_id,
                     "type": "agentMessage",
                     "text": text,
+                    "model": model,
                 }
             }),
         );
@@ -2149,19 +2239,6 @@ fn is_subagent_task(command: &str, tool_input: &Value) -> bool {
         || tool_input.get("subagentType").is_some()
 }
 
-fn is_subagent_tool_result(
-    command: &str,
-    tool_input: &Value,
-    value: &Value,
-    subagent_tool_ids: &HashSet<String>,
-    tool_use_id: &str,
-) -> bool {
-    if !tool_use_id.is_empty() && subagent_tool_ids.contains(tool_use_id) {
-        return true;
-    }
-    is_subagent_task(command, tool_input) || extract_subagent_id(value).is_some()
-}
-
 fn has_user_message_content(content: &[Value]) -> bool {
     content.iter().any(|entry| {
         matches!(
@@ -2171,7 +2248,7 @@ fn has_user_message_content(content: &[Value]) -> bool {
     })
 }
 
-fn format_token_usage(raw: Value) -> Option<Value> {
+fn format_token_usage(raw: Value, model_usage: Option<&Value>) -> Option<Value> {
     let Value::Object(map) = raw else {
         return None;
     };
@@ -2184,6 +2261,14 @@ fn format_token_usage(raw: Value) -> Option<Value> {
     let reasoning_output_tokens =
         usage_number(&map, &["reasoning_output_tokens", "reasoningOutputTokens"]);
     let total_tokens = input_tokens + output_tokens + cached_input_tokens;
+
+    // Extract modelContextWindow from modelUsage (first model's contextWindow)
+    let model_context_window = model_usage
+        .and_then(|mu| mu.as_object())
+        .and_then(|obj| obj.values().next())
+        .and_then(|model_data| model_data.get("contextWindow"))
+        .and_then(|cw| cw.as_i64());
+
     Some(json!({
         "total": {
             "totalTokens": total_tokens,
@@ -2198,7 +2283,8 @@ fn format_token_usage(raw: Value) -> Option<Value> {
             "cachedInputTokens": cached_input_tokens,
             "outputTokens": output_tokens,
             "reasoningOutputTokens": reasoning_output_tokens,
-        }
+        },
+        "modelContextWindow": model_context_window
     }))
 }
 
@@ -2276,11 +2362,6 @@ fn resolve_permissions_path(
     resolve_default_claude_home()
         .map(|home| home.join("settings.json"))
         .ok_or_else(|| "Unable to resolve Claude settings path".to_string())
-}
-
-fn format_permission_rule(command: &[String]) -> String {
-    let joined = command.join(" ");
-    format!("Bash({joined}:*)")
 }
 
 fn read_settings_json(path: &Path) -> Result<Map<String, Value>, String> {
