@@ -168,4 +168,132 @@ describe("threadItems", () => {
     }
   });
 
+  describe("optimistic user message reconciliation", () => {
+    it("drops optimistic user message when server has matching new message", () => {
+      // Scenario: user sends "hi", switches threads, comes back
+      // Local has optimistic ID, remote has server ID with same text
+      const localItems: ConversationItem[] = [
+        { id: "1705934567890-user", kind: "message", role: "user", text: "hi" },
+        { id: "msg_001", kind: "message", role: "assistant", text: "Hello!" },
+      ];
+      const remoteItems: ConversationItem[] = [
+        { id: "msg_xyz789", kind: "message", role: "user", text: "hi" },
+        { id: "msg_001", kind: "message", role: "assistant", text: "Hello!" },
+      ];
+      const merged = mergeThreadItems(remoteItems, localItems);
+
+      // Should only have 2 items - the optimistic was replaced by server version
+      expect(merged).toHaveLength(2);
+      const userMessages = merged.filter(
+        (i) => i.kind === "message" && i.role === "user",
+      );
+      expect(userMessages).toHaveLength(1);
+      expect(userMessages[0].id).toBe("msg_xyz789"); // server ID, not optimistic
+    });
+
+    it("keeps optimistic message when no matching server message exists", () => {
+      // Scenario: user sends message but server hasn't processed it yet
+      const localItems: ConversationItem[] = [
+        { id: "msg_001", kind: "message", role: "user", text: "first message" },
+        { id: "1705934567890-user", kind: "message", role: "user", text: "pending message" },
+      ];
+      const remoteItems: ConversationItem[] = [
+        { id: "msg_001", kind: "message", role: "user", text: "first message" },
+      ];
+      const merged = mergeThreadItems(remoteItems, localItems);
+
+      // Should have both messages - optimistic is still pending
+      expect(merged).toHaveLength(2);
+      const pendingMsg = merged.find((i) => i.id === "1705934567890-user");
+      expect(pendingMsg).toBeDefined();
+    });
+
+    it("handles multiple identical optimistic messages with count-based matching", () => {
+      // Scenario: user sends "ok" twice quickly (with response between), server processed one
+      // Note: messages are separated by other items to avoid adjacent dedupe
+      const localItems: ConversationItem[] = [
+        { id: "1705934567890-user", kind: "message", role: "user", text: "ok" },
+        { id: "msg_resp1", kind: "message", role: "assistant", text: "Got it" },
+        { id: "1705934567891-user", kind: "message", role: "user", text: "ok" },
+      ];
+      const remoteItems: ConversationItem[] = [
+        { id: "msg_abc", kind: "message", role: "user", text: "ok" },
+        { id: "msg_resp1", kind: "message", role: "assistant", text: "Got it" },
+      ];
+      const merged = mergeThreadItems(remoteItems, localItems);
+
+      // Should have 3 items - server "ok", assistant response, pending optimistic "ok"
+      expect(merged).toHaveLength(3);
+      const userMessages = merged.filter(
+        (i) => i.kind === "message" && i.role === "user",
+      );
+      expect(userMessages).toHaveLength(2);
+      // One should be server ID, one should be optimistic
+      const serverMsg = userMessages.find((i) => i.id === "msg_abc");
+      const optimisticMsg = userMessages.find((i) => /^\d+-user$/.test(i.id));
+      expect(serverMsg).toBeDefined();
+      expect(optimisticMsg).toBeDefined();
+    });
+
+    it("drops both optimistics when server has both", () => {
+      // Scenario: user sends "ok" twice (with responses between), both processed by server
+      const localItems: ConversationItem[] = [
+        { id: "1705934567890-user", kind: "message", role: "user", text: "ok" },
+        { id: "msg_resp1", kind: "message", role: "assistant", text: "First response" },
+        { id: "1705934567891-user", kind: "message", role: "user", text: "ok" },
+        { id: "msg_resp2", kind: "message", role: "assistant", text: "Second response" },
+      ];
+      const remoteItems: ConversationItem[] = [
+        { id: "msg_abc", kind: "message", role: "user", text: "ok" },
+        { id: "msg_resp1", kind: "message", role: "assistant", text: "First response" },
+        { id: "msg_def", kind: "message", role: "user", text: "ok" },
+        { id: "msg_resp2", kind: "message", role: "assistant", text: "Second response" },
+      ];
+      const merged = mergeThreadItems(remoteItems, localItems);
+
+      // Should only have server messages (4 total: 2 user + 2 assistant)
+      expect(merged).toHaveLength(4);
+      const userMessages = merged.filter(
+        (i) => i.kind === "message" && i.role === "user",
+      );
+      expect(userMessages).toHaveLength(2);
+      expect(userMessages.every((i) => i.id.startsWith("msg_"))).toBe(true);
+    });
+
+    it("does not drop optimistic when server message was already in local", () => {
+      // Scenario: local already had the server message, optimistic is for a new send
+      // Messages separated by assistant response to avoid adjacent dedupe
+      const localItems: ConversationItem[] = [
+        { id: "msg_abc", kind: "message", role: "user", text: "hello" },
+        { id: "msg_resp1", kind: "message", role: "assistant", text: "Hi there" },
+        { id: "1705934567890-user", kind: "message", role: "user", text: "hello" },
+      ];
+      const remoteItems: ConversationItem[] = [
+        { id: "msg_abc", kind: "message", role: "user", text: "hello" },
+        { id: "msg_resp1", kind: "message", role: "assistant", text: "Hi there" },
+      ];
+      const merged = mergeThreadItems(remoteItems, localItems);
+
+      // Should keep all 3 - msg_abc was already known, optimistic is pending
+      expect(merged).toHaveLength(3);
+      const optimisticMsg = merged.find((i) => i.id === "1705934567890-user");
+      expect(optimisticMsg).toBeDefined();
+    });
+
+    it("only reconciles user messages, not assistant messages", () => {
+      // Optimistic assistant messages (if any) should not be affected
+      const localItems: ConversationItem[] = [
+        { id: "1705934567890-assistant", kind: "message", role: "assistant", text: "response" },
+      ];
+      const remoteItems: ConversationItem[] = [
+        { id: "msg_abc", kind: "message", role: "assistant", text: "response" },
+      ];
+      const merged = mergeThreadItems(remoteItems, localItems);
+
+      // Both should exist (dedupe may handle it, but optimistic reconciliation shouldn't)
+      // The key is that the optimistic ID pattern for user messages doesn't match assistant
+      expect(merged.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
 });

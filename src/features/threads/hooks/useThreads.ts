@@ -736,17 +736,11 @@ export function useThreads({
       }
       const converted = buildConversationItem(item);
       if (converted) {
-        dispatch({
-          type: "upsertItem",
-          workspaceId,
-          threadId,
-          item: converted,
-          hasCustomName: Boolean(getCustomName(workspaceId, threadId)),
-        });
+        dispatch({ type: "upsertItem", threadId, item: converted });
       }
       safeMessageActivity();
     },
-    [applyCollabThreadLinks, getCustomName, markProcessing, safeMessageActivity],
+    [applyCollabThreadLinks, markProcessing, safeMessageActivity],
   );
 
   const handleToolOutputDelta = useCallback(
@@ -856,6 +850,22 @@ export function useThreads({
           delta,
           hasCustomName,
         });
+      },
+      onAgentMessageStarted: ({
+        workspaceId,
+        threadId,
+        itemId,
+        model,
+      }: {
+        workspaceId: string;
+        threadId: string;
+        itemId: string;
+        model?: string | null;
+      }) => {
+        if (model) {
+          dispatch({ type: "ensureThread", workspaceId, threadId });
+          dispatch({ type: "setAgentMessageModel", threadId, itemId, model });
+        }
       },
       onAgentMessageCompleted: ({
         workspaceId,
@@ -1604,7 +1614,6 @@ export function useThreads({
         },
       });
       recordThreadActivity(workspace.id, threadId);
-      // Optimistic update - shows user message immediately. Do not remove on upstream merge.
       const hasCustomName = Boolean(getCustomName(workspace.id, threadId));
       dispatch({
         type: "addUserMessage",

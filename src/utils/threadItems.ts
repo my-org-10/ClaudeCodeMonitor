@@ -37,17 +37,6 @@ function formatJsonOutput(value: unknown) {
   }
 }
 
-function asNumber(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
 function truncateText(text: string, maxLength = MAX_ITEM_TEXT) {
   if (text.length <= maxLength) {
     return text;
@@ -215,9 +204,6 @@ export function buildConversationItem(
   if (!id || !type) {
     return null;
   }
-  if (type === "agentMessage") {
-    return null;
-  }
   if (type === "userMessage") {
     const content = Array.isArray(item.content) ? item.content : [];
     const text = userInputsToText(content);
@@ -227,6 +213,9 @@ export function buildConversationItem(
       role: "user",
       text: text || "[message]",
     };
+  }
+  if (type === "agentMessage") {
+    return null;
   }
   if (type === "reasoning") {
     const summary = asString(item.summary ?? "");
@@ -239,7 +228,6 @@ export function buildConversationItem(
     const command = Array.isArray(item.command)
       ? item.command.map((part) => asString(part)).join(" ")
       : asString(item.command ?? "");
-    const durationMs = asNumber(item.durationMs ?? item.duration_ms);
     const toolInput = asRecord(item.toolInput ?? item.tool_input ?? null);
     return {
       id,
@@ -250,7 +238,6 @@ export function buildConversationItem(
       toolInput,
       status: asString(item.status ?? ""),
       output: asString(item.aggregatedOutput ?? ""),
-      durationMs,
     };
   }
   if (type === "fileChange") {
@@ -511,10 +498,28 @@ function chooseRicherItem(remote: ConversationItem, local: ConversationItem) {
   return remote;
 }
 
-// Deduplication: prevents duplicates from optimistic updates. Prefers remote IDs over local.
 const DEDUPE_MESSAGE_ROLES = new Set(["user", "assistant"]);
 const ASSISTANT_DEDUPE_WINDOW = 6;
 const USER_DEDUPE_WINDOW = 6;
+
+/**
+ * Check if a message is an optimistic user message created locally before server confirmation.
+ * These have IDs like "1705934567890-user" (timestamp + "-user").
+ */
+function isOptimisticUserMessage(item: ConversationItem): boolean {
+  return (
+    item.kind === "message" &&
+    item.role === "user" &&
+    /^\d+-user$/.test(item.id)
+  );
+}
+
+/** Type guard version of isOptimisticUserMessage for contexts needing type narrowing */
+function isOptimisticUserMessageItem(
+  item: ConversationItem,
+): item is Extract<ConversationItem, { kind: "message" }> {
+  return isOptimisticUserMessage(item);
+}
 
 function dedupeAdjacentMessageDuplicates(
   items: ConversationItem[],
@@ -616,6 +621,13 @@ function dedupeUserMessagesWithinWindow(
       deduped.push(item);
       continue;
     }
+    // Skip dedupe for optimistic user messages - these are already handled by
+    // the optimistic reconciliation logic in mergeThreadItems. If an optimistic
+    // message made it this far, it should be kept (e.g., still pending on server).
+    if (isOptimisticUserMessage(item)) {
+      deduped.push(item);
+      continue;
+    }
     let matchedIndex: number | null = null;
     for (
       let index = deduped.length - 1;
@@ -658,17 +670,74 @@ export function mergeThreadItems(
   if (!localItems.length) {
     return remoteItems;
   }
+
+  const localIds = new Set(localItems.map((item) => item.id));
   const remoteIds = new Set(remoteItems.map((item) => item.id));
   const byId = new Map(remoteItems.map((item) => [item.id, item]));
+
+  // Count "new to local snapshot" remote items by content.
+  // These are server items that weren't in the local state before resume.
+  // We use this to reconcile local items with their server counterparts.
+  const newRemoteCounts = new Map<string, number>();
+  for (const item of remoteItems) {
+    // Only count items that are new relative to local snapshot
+    if (localIds.has(item.id)) {
+      continue;
+    }
+
+    let key: string | null = null;
+    if (item.kind === "message") {
+      const trimmed = item.text.trim();
+      if (trimmed) {
+        key = `message:${item.role}:${trimmed}`;
+      }
+    } else if (item.kind === "reasoning") {
+      // Use summary + content for reasoning block identity
+      const content = `${item.summary.trim()}|${item.content.trim()}`;
+      if (content !== "|") {
+        key = `reasoning:${content}`;
+      }
+    }
+
+    if (key) {
+      newRemoteCounts.set(key, (newRemoteCounts.get(key) ?? 0) + 1);
+    }
+  }
+
   const merged = remoteItems.map((item) => {
     const local = localItems.find((entry) => entry.id === item.id);
     return local ? chooseRicherItem(item, local) : item;
   });
-  localItems.forEach((item) => {
-    if (!byId.has(item.id)) {
-      merged.push(item);
+
+  for (const item of localItems) {
+    if (byId.has(item.id)) {
+      continue;
     }
-  });
+
+    // Drop local item if there's a matching "new" remote item with same content.
+    // This handles the case where user switches threads and comes back -
+    // the server has the canonical version, so we drop the local copy.
+    let contentKey: string | null = null;
+    if (isOptimisticUserMessageItem(item)) {
+      contentKey = `message:user:${item.text.trim()}`;
+    } else if (item.kind === "reasoning") {
+      const content = `${item.summary.trim()}|${item.content.trim()}`;
+      if (content !== "|") {
+        contentKey = `reasoning:${content}`;
+      }
+    }
+
+    if (contentKey) {
+      const remaining = newRemoteCounts.get(contentKey) ?? 0;
+      if (remaining > 0) {
+        newRemoteCounts.set(contentKey, remaining - 1);
+        continue; // skip local duplicate - server has the canonical version
+      }
+    }
+
+    merged.push(item);
+  }
+
   const dedupedAdjacent = dedupeAdjacentMessageDuplicates(merged, remoteIds);
   const dedupedAssistants = dedupeAssistantMessagesWithinWindow(
     dedupedAdjacent,

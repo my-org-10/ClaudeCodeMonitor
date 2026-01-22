@@ -27,6 +27,12 @@ type AppServerEventHandlers = {
     denials: PermissionDenial[];
   }) => void;
   onAgentMessageDelta?: (event: AgentDelta) => void;
+  onAgentMessageStarted?: (event: {
+    workspaceId: string;
+    threadId: string;
+    itemId: string;
+    model?: string | null;
+  }) => void;
   onAgentMessageCompleted?: (event: AgentCompleted) => void;
   onAppServerEvent?: (event: AppServerEvent) => void;
   onTurnStarted?: (workspaceId: string, threadId: string, turnId: string) => void;
@@ -279,8 +285,9 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
               itemId,
               text,
             };
-            if (typeof item.model === "string" && item.model.trim()) {
-              payload.model = item.model;
+            const modelValue = item.model ?? item.model_id ?? item.modelId;
+            if (typeof modelValue === "string" && modelValue.trim()) {
+              payload.model = modelValue;
             }
             handlers.onAgentMessageCompleted?.(payload);
           }
@@ -294,6 +301,18 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
         const item = params.item as Record<string, unknown> | undefined;
         if (threadId && item) {
           handlers.onItemStarted?.(workspace_id, threadId, item);
+          if (item.type === "agentMessage") {
+            const itemId = String(item.id ?? "");
+            const modelValue = item.model ?? item.model_id ?? item.modelId;
+            if (itemId) {
+              handlers.onAgentMessageStarted?.({
+                workspaceId: workspace_id,
+                threadId,
+                itemId,
+                model: typeof modelValue === "string" && modelValue.trim() ? modelValue : null,
+              });
+            }
+          }
         }
         return;
       }

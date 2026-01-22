@@ -83,6 +83,11 @@ describe("useThreads UX integration", () => {
                   text: "Hello world",
                 },
                 {
+                  type: "userMessage",
+                  id: "server-user-2",
+                  content: [{ type: "text", text: "Hello" }],
+                },
+                {
                   type: "enteredReviewMode",
                   id: "review-1",
                 },
@@ -158,7 +163,11 @@ describe("useThreads UX integration", () => {
         item.role === "user" &&
         item.text === "Hello",
     );
-    expect(userHelloMessages).toHaveLength(1);
+    // Two "Hello" messages were sent locally, and server processed both
+    // Optimistic messages are reconciled with server versions
+    expect(userHelloMessages).toHaveLength(2);
+    // Both should have server IDs (optimistics were replaced)
+    expect(userHelloMessages.every((m) => m.id.startsWith("server-"))).toBe(true);
 
     const assistantMerged = activeItems.find(
       (item) =>
