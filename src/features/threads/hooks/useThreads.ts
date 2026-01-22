@@ -1604,6 +1604,16 @@ export function useThreads({
         },
       });
       recordThreadActivity(workspace.id, threadId);
+      // Optimistic update - shows user message immediately. Do not remove on upstream merge.
+      const hasCustomName = Boolean(getCustomName(workspace.id, threadId));
+      dispatch({
+        type: "addUserMessage",
+        workspaceId: workspace.id,
+        threadId,
+        text: finalText,
+        images,
+        hasCustomName,
+      });
       markProcessing(threadId, true);
       safeMessageActivity();
       onDebug?.({
@@ -1679,6 +1689,7 @@ export function useThreads({
       collaborationMode,
       customPrompts,
       effort,
+      getCustomName,
       markProcessing,
       model,
       onDebug,
