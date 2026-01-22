@@ -24,6 +24,7 @@ import type {
   BranchInfo,
   CollaborationModeOption,
   ConversationItem,
+  ComposerEditorSettings,
   CustomPromptOption,
   DebugEntry,
   DictationSessionState,
@@ -101,6 +102,7 @@ type LayoutNodesOptions = {
   activeThreadId: string | null;
   activeItems: ConversationItem[];
   activeRateLimits: RateLimitSnapshot | null;
+  codeBlockCopyUseModifier: boolean;
   approvals: ApprovalRequest[];
   permissionDenials: PermissionDenial[];
   handleApprovalDecision: (
@@ -330,7 +332,11 @@ type LayoutNodesOptions = {
   skills: SkillOption[];
   prompts: CustomPromptOption[];
   files: string[];
+  onInsertComposerText: (text: string) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
+  composerEditorSettings: ComposerEditorSettings;
+  composerEditorExpanded: boolean;
+  onToggleComposerEditorExpanded: () => void;
   dictationEnabled: boolean;
   dictationState: DictationSessionState;
   dictationLevel: number;
@@ -441,6 +447,7 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
       items={options.activeItems}
       threadId={options.activeThreadId ?? null}
       workspacePath={options.activeWorkspace?.path ?? null}
+      codeBlockCopyUseModifier={options.codeBlockCopyUseModifier}
       isThinking={
         options.activeThreadId
           ? options.threadStatusById[options.activeThreadId]?.isProcessing ?? false
@@ -493,6 +500,9 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
       prompts={options.prompts}
       files={options.files}
       textareaRef={options.textareaRef}
+      editorSettings={options.composerEditorSettings}
+      editorExpanded={options.composerEditorExpanded}
+      onToggleEditorExpanded={options.onToggleComposerEditorExpanded}
       dictationEnabled={options.dictationEnabled}
       dictationState={options.dictationState}
       dictationLevel={options.dictationLevel}
@@ -598,11 +608,13 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
   if (options.filePanelMode === "files" && options.activeWorkspace) {
     gitDiffPanelNode = (
       <FileTreePanel
+        workspaceId={options.activeWorkspace.id}
         workspacePath={options.activeWorkspace.path}
         files={options.files}
         isLoading={options.fileTreeLoading}
         filePanelMode={options.filePanelMode}
         onFilePanelModeChange={options.onFilePanelModeChange}
+        onInsertText={options.onInsertComposerText}
       />
     );
   } else if (options.filePanelMode === "prompts") {

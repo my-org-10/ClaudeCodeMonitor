@@ -109,6 +109,7 @@ pub fn run() {
             git::get_github_pull_request_diff,
             git::get_github_pull_request_comments,
             workspaces::list_workspace_files,
+            workspaces::read_workspace_file,
             workspaces::open_workspace_in,
             git::list_git_branches,
             git::checkout_git_branch,

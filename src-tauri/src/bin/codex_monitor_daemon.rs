@@ -12,12 +12,12 @@ mod storage;
 mod types;
 
 use chrono::DateTime;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader as StdBufReader};
+use std::io::{BufRead, BufReader as StdBufReader, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -96,6 +96,12 @@ struct DaemonState {
     settings_path: PathBuf,
     app_settings: Mutex<AppSettings>,
     event_sink: DaemonEventSink,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WorkspaceFileResponse {
+    content: String,
+    truncated: bool,
 }
 
 impl DaemonState {
@@ -779,6 +785,23 @@ impl DaemonState {
 
         let root = PathBuf::from(entry.path);
         Ok(list_workspace_files_inner(&root, 20000))
+    }
+
+    async fn read_workspace_file(
+        &self,
+        workspace_id: String,
+        path: String,
+    ) -> Result<WorkspaceFileResponse, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+
+        let root = PathBuf::from(entry.path);
+        read_workspace_file_inner(&root, &path)
     }
 
     async fn start_thread(&self, workspace_id: String) -> Result<Value, String> {
@@ -2288,6 +2311,45 @@ fn list_workspace_files_inner(root: &PathBuf, max_files: usize) -> Vec<String> {
     results
 }
 
+const MAX_WORKSPACE_FILE_BYTES: u64 = 400_000;
+
+fn read_workspace_file_inner(
+    root: &PathBuf,
+    relative_path: &str,
+) -> Result<WorkspaceFileResponse, String> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|err| format!("Failed to resolve workspace root: {err}"))?;
+    let candidate = canonical_root.join(relative_path);
+    let canonical_path = candidate
+        .canonicalize()
+        .map_err(|err| format!("Failed to open file: {err}"))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err("Invalid file path".to_string());
+    }
+    let metadata = std::fs::metadata(&canonical_path)
+        .map_err(|err| format!("Failed to read file metadata: {err}"))?;
+    if !metadata.is_file() {
+        return Err("Path is not a file".to_string());
+    }
+
+    let mut file =
+        File::open(&canonical_path).map_err(|err| format!("Failed to open file: {err}"))?;
+    let mut buffer = Vec::new();
+    file.take(MAX_WORKSPACE_FILE_BYTES + 1)
+        .read_to_end(&mut buffer)
+        .map_err(|err| format!("Failed to read file: {err}"))?;
+
+    let truncated = buffer.len() > MAX_WORKSPACE_FILE_BYTES as usize;
+    if truncated {
+        buffer.truncate(MAX_WORKSPACE_FILE_BYTES as usize);
+    }
+
+    let content =
+        String::from_utf8(buffer).map_err(|_| "File is not valid UTF-8".to_string())?;
+    Ok(WorkspaceFileResponse { content, truncated })
+}
+
 async fn run_git_command(repo_path: &PathBuf, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
@@ -2787,6 +2849,12 @@ async fn handle_rpc_request(
             let workspace_id = parse_string(&params, "workspaceId")?;
             let files = state.list_workspace_files(workspace_id).await?;
             serde_json::to_value(files).map_err(|err| err.to_string())
+        }
+        "read_workspace_file" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let path = parse_string(&params, "path")?;
+            let response = state.read_workspace_file(workspace_id, path).await?;
+            serde_json::to_value(response).map_err(|err| err.to_string())
         }
         "get_app_settings" => {
             let mut settings = state.app_settings.lock().await.clone();
