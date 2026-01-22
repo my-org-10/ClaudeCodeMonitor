@@ -14,6 +14,7 @@ type AgentCompleted = {
   threadId: string;
   itemId: string;
   text: string;
+  model?: string | null;
 };
 
 type AppServerEventHandlers = {
@@ -208,12 +209,16 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
           const itemId = String(item.id ?? "");
           const text = String(item.text ?? "");
           if (itemId) {
-            handlers.onAgentMessageCompleted?.({
+            const payload: AgentCompleted = {
               workspaceId: workspace_id,
               threadId,
               itemId,
               text,
-            });
+            };
+            if (typeof item.model === "string" && item.model.trim()) {
+              payload.model = item.model;
+            }
+            handlers.onAgentMessageCompleted?.(payload);
           }
         }
         return;

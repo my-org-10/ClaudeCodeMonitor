@@ -849,11 +849,13 @@ export function useThreads({
         threadId,
         itemId,
         text,
+        model,
       }: {
         workspaceId: string;
         threadId: string;
         itemId: string;
         text: string;
+        model?: string | null;
       }) => {
         const timestamp = Date.now();
         dispatch({ type: "ensureThread", workspaceId, threadId });
@@ -865,6 +867,7 @@ export function useThreads({
           itemId,
           text,
           hasCustomName,
+          model,
         });
         dispatch({
           type: "setLastAgentMessage",
@@ -1040,7 +1043,6 @@ export function useThreads({
       handleItemUpdate,
       handleTerminalInteraction,
       handleToolOutputDelta,
-      handleTerminalInteraction,
       markProcessing,
       onDebug,
       recordThreadActivity,

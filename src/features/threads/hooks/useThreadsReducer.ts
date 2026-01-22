@@ -152,6 +152,7 @@ export type ThreadAction =
       itemId: string;
       delta: string;
       hasCustomName: boolean;
+      model?: string | null;
     }
   | {
       type: "completeAgentMessage";
@@ -160,6 +161,7 @@ export type ThreadAction =
       itemId: string;
       text: string;
       hasCustomName: boolean;
+      model?: string | null;
     }
   | { type: "upsertItem"; threadId: string; item: ConversationItem }
   | { type: "setThreadItems"; threadId: string; items: ConversationItem[] }
@@ -595,6 +597,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
           kind: "message",
           role: "assistant",
           text: action.delta,
+          model: action.model ?? undefined,
         });
       }
       const updatedItems = prepareThreadItems(list, action.threadId);
@@ -623,6 +626,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
         list[index] = {
           ...existing,
           text: action.text || existing.text,
+          model: action.model ?? existing.model ?? undefined,
         };
       } else {
         list.push({
@@ -630,6 +634,7 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
           kind: "message",
           role: "assistant",
           text: action.text,
+          model: action.model ?? undefined,
         });
       }
       const updatedItems = prepareThreadItems(list, action.threadId);

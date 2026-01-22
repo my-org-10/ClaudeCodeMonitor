@@ -782,6 +782,7 @@ async fn run_claude_turn(
     let mut last_text = String::new();
     let mut last_usage: Option<Value> = None;
     let mut last_model_usage: Option<Value> = None;
+    let mut last_model: Option<String> = None;
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut tool_inputs: HashMap<String, Value> = HashMap::new();
     let mut tool_counter: usize = 0;
@@ -807,6 +808,11 @@ async fn run_claude_turn(
                 }
             }
             if let Some(message) = value.get("message") {
+                if let Some(model) = message.get("model").and_then(|v| v.as_str()) {
+                    if !model.trim().is_empty() {
+                        last_model = Some(model.to_string());
+                    }
+                }
                 if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                     for entry in content {
                         let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -1021,7 +1027,12 @@ async fn run_claude_turn(
         "item/completed",
         json!({
             "threadId": thread_id,
-            "item": { "id": item_id, "type": "agentMessage", "text": full_text },
+            "item": {
+                "id": item_id,
+                "type": "agentMessage",
+                "text": full_text,
+                "model": last_model,
+            },
         }),
     );
     emit_event(
@@ -1298,10 +1309,14 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                 }
             }
             if !text.trim().is_empty() {
+                let model = message
+                    .and_then(|message| message.get("model"))
+                    .and_then(|value| value.as_str());
                 items.push(json!({
                     "id": value.get("uuid").and_then(|v| v.as_str()).unwrap_or(thread_id),
                     "type": "agentMessage",
                     "text": text.trim(),
+                    "model": model,
                 }));
             }
         }
@@ -1799,6 +1814,9 @@ fn process_subagent_line(
             .get("uuid")
             .and_then(|v| v.as_str())
             .unwrap_or(thread_id);
+        let model = message
+            .and_then(|message| message.get("model"))
+            .and_then(|value| value.as_str());
         emit_event(
             event_sink,
             workspace_id,
@@ -1809,6 +1827,7 @@ fn process_subagent_line(
                     "id": message_id,
                     "type": "agentMessage",
                     "text": text,
+                    "model": model,
                 }
             }),
         );
