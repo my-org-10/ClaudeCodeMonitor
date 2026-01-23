@@ -37,7 +37,7 @@ vi.mock("../../../services/tauri", () => ({
 
 const workspace: WorkspaceInfo = {
   id: "ws-1",
-  name: "CodexMonitor",
+  name: "ClaudeCodeMonitor",
   path: "/tmp/codex",
   connected: true,
   settings: { sidebarCollapsed: false },
@@ -81,6 +81,11 @@ describe("useThreads UX integration", () => {
                   type: "agentMessage",
                   id: "assistant-1",
                   text: "Hello world",
+                },
+                {
+                  type: "userMessage",
+                  id: "server-user-2",
+                  content: [{ type: "text", text: "Hello" }],
                 },
                 {
                   type: "enteredReviewMode",
@@ -158,7 +163,11 @@ describe("useThreads UX integration", () => {
         item.role === "user" &&
         item.text === "Hello",
     );
-    expect(userHelloMessages).toHaveLength(1);
+    // Two "Hello" messages were sent locally, and server processed both
+    // Optimistic messages are reconciled with server versions
+    expect(userHelloMessages).toHaveLength(2);
+    // Both should have server IDs (optimistics were replaced)
+    expect(userHelloMessages.every((m) => m.id.startsWith("server-"))).toBe(true);
 
     const assistantMerged = activeItems.find(
       (item) =>

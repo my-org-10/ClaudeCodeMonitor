@@ -851,6 +851,22 @@ export function useThreads({
           hasCustomName,
         });
       },
+      onAgentMessageStarted: ({
+        workspaceId,
+        threadId,
+        itemId,
+        model,
+      }: {
+        workspaceId: string;
+        threadId: string;
+        itemId: string;
+        model?: string | null;
+      }) => {
+        if (model) {
+          dispatch({ type: "ensureThread", workspaceId, threadId });
+          dispatch({ type: "setAgentMessageModel", threadId, itemId, model });
+        }
+      },
       onAgentMessageCompleted: ({
         workspaceId,
         threadId,

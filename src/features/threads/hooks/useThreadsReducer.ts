@@ -166,6 +166,7 @@ export type ThreadAction =
       model?: string | null;
     }
   | { type: "upsertItem"; threadId: string; item: ConversationItem }
+  | { type: "setAgentMessageModel"; threadId: string; itemId: string; model: string }
   | { type: "setThreadItems"; threadId: string; items: ConversationItem[] }
   | {
       type: "appendReasoningSummary";
@@ -658,6 +659,26 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
           [action.threadId]: updatedItems,
         },
         threadsByWorkspace: nextThreadsByWorkspace,
+      };
+    }
+    case "setAgentMessageModel": {
+      const list = state.itemsByThread[action.threadId] ?? [];
+      const index = list.findIndex((msg) => msg.id === action.itemId);
+      if (index < 0 || list[index].kind !== "message") {
+        return state;
+      }
+      const existing = list[index];
+      if (existing.model) {
+        return state;
+      }
+      const updated = [...list];
+      updated[index] = { ...existing, model: action.model };
+      return {
+        ...state,
+        itemsByThread: {
+          ...state.itemsByThread,
+          [action.threadId]: updated,
+        },
       };
     }
     case "upsertItem": {

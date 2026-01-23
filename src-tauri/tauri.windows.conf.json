@@ -2,7 +2,7 @@
   "app": {
     "windows": [
       {
-        "title": "CodexMonitor",
+        "title": "Claude Code Monitor",
         "width": 1200,
         "height": 700,
         "minWidth": 360,

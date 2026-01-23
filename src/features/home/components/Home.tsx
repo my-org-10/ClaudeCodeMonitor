@@ -60,9 +60,15 @@ export function Home({
       const scaled = value / 1_000_000_000;
       return `${scaled.toFixed(scaled >= 10 ? 0 : 1)}b`;
     }
+    if (value >= 999_500_000) {
+      return "1b";
+    }
     if (value >= 1_000_000) {
       const scaled = value / 1_000_000;
       return `${scaled.toFixed(scaled >= 10 ? 0 : 1)}m`;
+    }
+    if (value >= 999_500) {
+      return "1m";
     }
     if (value >= 1_000) {
       const scaled = value / 1_000;

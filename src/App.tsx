@@ -60,8 +60,10 @@ import { useAppSettingsController } from "./features/app/hooks/useAppSettingsCon
 import { useUpdaterController } from "./features/app/hooks/useUpdaterController";
 import { useComposerShortcuts } from "./features/composer/hooks/useComposerShortcuts";
 import { useComposerMenuActions } from "./features/composer/hooks/useComposerMenuActions";
+import { useComposerEditorState } from "./features/composer/hooks/useComposerEditorState";
 import { useDictationController } from "./features/app/hooks/useDictationController";
 import { useComposerController } from "./features/app/hooks/useComposerController";
+import { useComposerInsert } from "./features/app/hooks/useComposerInsert";
 import { useRenameThreadPrompt } from "./features/threads/hooks/useRenameThreadPrompt";
 import { useWorktreePrompt } from "./features/workspaces/hooks/useWorktreePrompt";
 import { useClonePrompt } from "./features/workspaces/hooks/useClonePrompt";
@@ -77,12 +79,14 @@ import { useAppMenuEvents } from "./features/app/hooks/useAppMenuEvents";
 import { useWorkspaceActions } from "./features/app/hooks/useWorkspaceActions";
 import { useWorkspaceCycling } from "./features/app/hooks/useWorkspaceCycling";
 import { useThreadRows } from "./features/app/hooks/useThreadRows";
+import { useLiquidGlassEffect } from "./features/app/hooks/useLiquidGlassEffect";
 import { useCopyThread } from "./features/threads/hooks/useCopyThread";
 import { useTerminalController } from "./features/terminal/hooks/useTerminalController";
 import { useGitCommitController } from "./features/app/hooks/useGitCommitController";
 import { pickWorkspacePath } from "./services/tauri";
 import type {
   AccessMode,
+  ComposerEditorSettings,
   WorkspaceInfo,
 } from "./types";
 
@@ -140,6 +144,7 @@ function MainApp() {
     handleCopyDebug,
     clearDebugEntries,
   } = useDebugLog();
+  useLiquidGlassEffect({ reduceTransparency, onDebug: addDebugEntry });
   const [accessMode, setAccessMode] = useState<AccessMode>("current");
   const [activeTab, setActiveTab] = useState<
     "projects" | "codex" | "git" | "log"
@@ -504,6 +509,33 @@ function MainApp() {
     queueSaveSettings,
   });
 
+  const { isExpanded: composerEditorExpanded, toggleExpanded: toggleComposerEditorExpanded } =
+    useComposerEditorState();
+
+  const composerEditorSettings = useMemo<ComposerEditorSettings>(
+    () => ({
+      preset: appSettings.composerEditorPreset,
+      expandFenceOnSpace: appSettings.composerFenceExpandOnSpace,
+      expandFenceOnEnter: appSettings.composerFenceExpandOnEnter,
+      fenceLanguageTags: appSettings.composerFenceLanguageTags,
+      fenceWrapSelection: appSettings.composerFenceWrapSelection,
+      autoWrapPasteMultiline: appSettings.composerFenceAutoWrapPasteMultiline,
+      autoWrapPasteCodeLike: appSettings.composerFenceAutoWrapPasteCodeLike,
+      continueListOnShiftEnter: appSettings.composerListContinuation,
+    }),
+    [
+      appSettings.composerEditorPreset,
+      appSettings.composerFenceExpandOnSpace,
+      appSettings.composerFenceExpandOnEnter,
+      appSettings.composerFenceLanguageTags,
+      appSettings.composerFenceWrapSelection,
+      appSettings.composerFenceAutoWrapPasteMultiline,
+      appSettings.composerFenceAutoWrapPasteCodeLike,
+      appSettings.composerListContinuation,
+    ],
+  );
+
+
   useSyncSelectedDiffPath({
     diffSource,
     centerMode,
@@ -845,6 +877,13 @@ function MainApp() {
     connectWorkspace,
     sendUserMessage,
     startReview,
+  });
+
+  const handleInsertComposerText = useComposerInsert({
+    activeThreadId,
+    draftText: activeDraft,
+    onDraftChange: handleDraftChange,
+    textareaRef: composerInputRef,
   });
 
   const {
@@ -1279,6 +1318,7 @@ function MainApp() {
     activeThreadId,
     activeItems,
     activeRateLimits,
+    codeBlockCopyUseModifier: appSettings.composerCodeBlockCopyUseModifier,
     approvals,
     permissionDenials,
     handleApprovalDecision,
@@ -1554,7 +1594,11 @@ function MainApp() {
     skills,
     prompts,
     files,
+    onInsertComposerText: handleInsertComposerText,
     textareaRef: composerInputRef,
+    composerEditorSettings,
+    composerEditorExpanded,
+    onToggleComposerEditorExpanded: toggleComposerEditorExpanded,
     dictationEnabled: appSettings.dictationEnabled && dictationReady,
     dictationState,
     dictationLevel,
