@@ -568,3 +568,10 @@ export async function generateCommitMessage(
 ): Promise<string> {
   return invoke("generate_commit_message", { workspaceId });
 }
+
+export async function generateRunMetadata(
+  workspaceId: string,
+  prompt: string,
+): Promise<{ title: string | null; worktreeName: string | null }> {
+  return invoke("generate_run_metadata", { workspaceId, prompt });
+}
