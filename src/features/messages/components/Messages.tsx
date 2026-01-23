@@ -632,10 +632,7 @@ const ReasoningRow = memo(function ReasoningRow({
     .replace(/[`*_~]/g, "")
     .replace(/\[(.*?)\]\(.*?\)/g, "$1")
     .trim();
-  const summaryTitle =
-    cleanTitle.length > 80
-      ? `${cleanTitle.slice(0, 80)}…`
-      : cleanTitle || "Reasoning";
+  const summaryTitle = cleanTitle || "Reasoning";
   const reasoningTone: StatusTone = summaryText ? "completed" : "processing";
   const bodyText =
     titleLineIndex >= 0
