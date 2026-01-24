@@ -72,7 +72,7 @@ impl WorkspaceSession {
     }
 }
 
-pub(crate) fn build_codex_path_env(codex_bin: Option<&str>) -> Option<String> {
+pub(crate) fn build_claude_path_env(claude_bin: Option<&str>) -> Option<String> {
     let mut paths: Vec<String> = env::var("PATH")
         .unwrap_or_default()
         .split(':')
@@ -105,7 +105,7 @@ pub(crate) fn build_codex_path_env(codex_bin: Option<&str>) -> Option<String> {
             }
         }
     }
-    if let Some(bin_path) = codex_bin.filter(|value| !value.trim().is_empty()) {
+    if let Some(bin_path) = claude_bin.filter(|value| !value.trim().is_empty()) {
         let parent = Path::new(bin_path).parent();
         if let Some(parent) = parent {
             extras.push(parent.to_string_lossy().to_string());
@@ -123,22 +123,22 @@ pub(crate) fn build_codex_path_env(codex_bin: Option<&str>) -> Option<String> {
     }
 }
 
-pub(crate) fn build_codex_command_with_bin(codex_bin: Option<String>) -> Command {
-    let bin = codex_bin
+pub(crate) fn build_claude_command_with_bin(claude_bin: Option<String>) -> Command {
+    let bin = claude_bin
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "codex".into());
+        .unwrap_or_else(|| "claude".into());
     let mut command = Command::new(bin);
-    if let Some(path_env) = build_codex_path_env(codex_bin.as_deref()) {
+    if let Some(path_env) = build_claude_path_env(claude_bin.as_deref()) {
         command.env("PATH", path_env);
     }
     command
 }
 
-pub(crate) async fn check_codex_installation(
-    codex_bin: Option<String>,
+pub(crate) async fn check_claude_installation(
+    claude_bin: Option<String>,
 ) -> Result<Option<String>, String> {
-    let mut command = build_codex_command_with_bin(codex_bin);
+    let mut command = build_claude_command_with_bin(claude_bin);
     command.arg("--version");
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -146,7 +146,7 @@ pub(crate) async fn check_codex_installation(
     let output = match timeout(Duration::from_secs(5), command.output()).await {
         Ok(result) => result.map_err(|e| {
             if e.kind() == ErrorKind::NotFound {
-                "Codex CLI not found. Install Codex and ensure `codex` is on your PATH."
+                "Claude CLI not found. Install Claude and ensure `claude` is on your PATH."
                     .to_string()
             } else {
                 e.to_string()
@@ -154,7 +154,7 @@ pub(crate) async fn check_codex_installation(
         })?,
         Err(_) => {
             return Err(
-                "Timed out while checking Codex CLI. Make sure `codex --version` runs in Terminal."
+                "Timed out while checking Claude CLI. Make sure `claude --version` runs in Terminal."
                     .to_string(),
             );
         }
@@ -170,12 +170,12 @@ pub(crate) async fn check_codex_installation(
         };
         if detail.is_empty() {
             return Err(
-                "Codex CLI failed to start. Try running `codex --version` in Terminal."
+                "Claude CLI failed to start. Try running `claude --version` in Terminal."
                     .to_string(),
             );
         }
         return Err(format!(
-            "Codex CLI failed to start: {detail}. Try running `codex --version` in Terminal."
+            "Claude CLI failed to start: {detail}. Try running `claude --version` in Terminal."
         ));
     }
 
@@ -190,14 +190,14 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
     event_sink: E,
     codex_home: Option<PathBuf>,
 ) -> Result<Arc<WorkspaceSession>, String> {
-    let codex_bin = entry
+    let claude_bin = entry
         .codex_bin
         .clone()
         .filter(|value| !value.trim().is_empty())
         .or(default_codex_bin);
-    let _ = check_codex_installation(codex_bin.clone()).await?;
+    let _ = check_claude_installation(claude_bin.clone()).await?;
 
-    let mut command = build_codex_command_with_bin(codex_bin);
+    let mut command = build_claude_command_with_bin(claude_bin);
     command.current_dir(&entry.path);
     command.arg("app-server");
     if let Some(codex_home) = codex_home {
@@ -337,7 +337,7 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
             let mut child = session.child.lock().await;
             let _ = child.kill().await;
             return Err(
-                "Codex app-server did not respond to initialize. Check that `codex app-server` works in Terminal."
+                "Claude app-server did not respond to initialize. Check that `claude app-server` works in Terminal."
                     .to_string(),
             );
         }

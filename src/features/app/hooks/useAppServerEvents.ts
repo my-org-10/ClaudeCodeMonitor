@@ -110,12 +110,18 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
         const params = (message.params as Record<string, unknown>) ?? {};
         const questionsRaw = Array.isArray(params.questions) ? params.questions : [];
         const questions = questionsRaw
-          .map((entry) => {
-            const question = entry as Record<string, unknown>;
+          .filter(
+            (entry): entry is Record<string, unknown> =>
+              entry !== null && typeof entry === "object",
+          )
+          .map((question) => {
             const optionsRaw = Array.isArray(question.options) ? question.options : [];
             const options = optionsRaw
-              .map((option) => {
-                const record = option as Record<string, unknown>;
+              .filter(
+                (option): option is Record<string, unknown> =>
+                  option !== null && typeof option === "object",
+              )
+              .map((record) => {
                 const label = String(record.label ?? "").trim();
                 const description = String(record.description ?? "").trim();
                 if (!label && !description) {

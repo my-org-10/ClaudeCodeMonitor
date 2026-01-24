@@ -70,11 +70,8 @@ export function RequestUserInputMessage({
   const buildAnswers = () => {
     const answers: RequestUserInputResponse["answers"] = {};
     questions.forEach((question, index) => {
-      if (!question.id) {
-        return;
-      }
-      const answerList: string[] = [];
       const key = question.id || `question-${index}`;
+      const answerList: string[] = [];
       const selectedIndex = selections[key];
       if (question.options?.length && selectedIndex !== null) {
         const selected = question.options[selectedIndex];
@@ -92,7 +89,7 @@ export function RequestUserInputMessage({
           answerList.push(note);
         }
       }
-      answers[question.id] = { answers: answerList };
+      answers[key] = { answers: answerList };
     });
     return answers;
   };

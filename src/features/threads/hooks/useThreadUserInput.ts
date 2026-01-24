@@ -11,9 +11,11 @@ type UseThreadUserInputOptions = {
 export function useThreadUserInput({ dispatch }: UseThreadUserInputOptions) {
   const handleUserInputSubmit = useCallback(
     async (request: RequestUserInputRequest, response: RequestUserInputResponse) => {
+      const toolUseId = request.params.tool_use_id || String(request.request_id);
+
       await respondToUserInputRequest(
         request.workspace_id,
-        request.params.tool_use_id,
+        toolUseId,
         response.answers,
       );
       dispatch({

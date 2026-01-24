@@ -355,6 +355,8 @@ pub(crate) async fn send_user_message(
         &session,
         &thread_id,
         model.as_deref(),
+        access_mode.as_deref(),
+        None, // max_thinking_tokens - use default
         event_sink,
     ).await?;
 
@@ -452,6 +454,8 @@ pub(crate) async fn start_review(
         &session,
         &thread_id,
         None,
+        None, // access_mode - use default
+        None, // max_thinking_tokens - use default
         event_sink,
     ).await?;
 
@@ -832,6 +836,12 @@ async fn run_claude_prompt_once(
     Ok(message.trim().to_string())
 }
 
+/// Container for the stdout and stderr readers from a spawned persistent Claude CLI session.
+pub(crate) struct PersistentSessionReaders {
+    pub stdout: AsyncBufReader<tokio::process::ChildStdout>,
+    pub stderr: AsyncBufReader<tokio::process::ChildStderr>,
+}
+
 /// Spawns a persistent Claude CLI session with bidirectional streaming.
 ///
 /// This function spawns Claude CLI with streaming JSON input/output format,
@@ -841,14 +851,18 @@ async fn run_claude_prompt_once(
 /// * `session` - The workspace session containing entry and claude_bin information
 /// * `thread_id` - The thread/session ID for session persistence
 /// * `model` - Optional model to use
+/// * `access_mode` - Optional permission mode (e.g., "dontAsk", "askEdits", etc.)
+/// * `max_thinking_tokens` - Optional max thinking tokens for extended thinking
 ///
 /// # Returns
-/// A buffered reader for stdout (the child process is stored in the session for cleanup)
+/// Readers for both stdout and stderr (the child process is stored in the session for cleanup)
 pub(crate) async fn spawn_persistent_claude_session(
     session: &Arc<WorkspaceSession>,
     thread_id: &str,
     model: Option<&str>,
-) -> Result<AsyncBufReader<tokio::process::ChildStdout>, String> {
+    access_mode: Option<&str>,
+    max_thinking_tokens: Option<u32>,
+) -> Result<PersistentSessionReaders, String> {
     let mut command = build_claude_command_with_bin(session.claude_bin.clone());
     command.current_dir(&session.entry.path);
 
@@ -864,6 +878,17 @@ pub(crate) async fn spawn_persistent_claude_session(
             command.arg("--model").arg(model);
         }
     }
+
+    // Set permission mode if specified
+    if let Some(mode) = access_mode {
+        if !mode.trim().is_empty() {
+            command.arg("--permission-mode").arg(mode);
+        }
+    }
+
+    // Set max thinking tokens (default to 31999, Claude's default)
+    let thinking_tokens = max_thinking_tokens.unwrap_or(31999);
+    command.arg("--max-thinking-tokens").arg(thinking_tokens.to_string());
 
     // Use --resume if session exists, otherwise --session-id
     if session_exists(&session.entry, thread_id) {
@@ -888,16 +913,26 @@ pub(crate) async fn spawn_persistent_claude_session(
 
     // Take stdout for reading responses
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let reader = AsyncBufReader::new(stdout);
+    let stdout_reader = AsyncBufReader::new(stdout);
+
+    // Take stderr for reading error messages
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+    let stderr_reader = AsyncBufReader::new(stderr);
 
     // Store child process in session for cleanup
     session.set_persistent_child(child).await;
 
-    Ok(reader)
+    Ok(PersistentSessionReaders {
+        stdout: stdout_reader,
+        stderr: stderr_reader,
+    })
 }
 
 /// Ensures a persistent session exists for the given workspace and thread.
 /// If no session exists, spawns one and starts the background stdout reader.
+///
+/// Uses double-checked locking to prevent race conditions where multiple
+/// concurrent callers could both spawn duplicate sessions.
 ///
 /// Returns the turn_id for the current turn.
 async fn ensure_persistent_session(
@@ -905,29 +940,47 @@ async fn ensure_persistent_session(
     session: &Arc<WorkspaceSession>,
     thread_id: &str,
     model: Option<&str>,
+    access_mode: Option<&str>,
+    max_thinking_tokens: Option<u32>,
     event_sink: TauriEventSink,
 ) -> Result<String, String> {
-    let stdin_exists = session.has_persistent_session().await;
+    // Acquire the session initialization lock to prevent race conditions
+    let _init_guard = session.session_init_lock.lock().await;
+
+    // Re-check after acquiring lock (another caller may have initialized while we waited)
+    if session.has_persistent_session().await {
+        // Another caller already initialized, just return a new turn_id
+        return Ok(Uuid::new_v4().to_string());
+    }
 
     let turn_id = Uuid::new_v4().to_string();
 
-    if !stdin_exists {
-        let reader = spawn_persistent_claude_session(session, thread_id, model).await?;
+    let readers = spawn_persistent_claude_session(session, thread_id, model, access_mode, max_thinking_tokens).await?;
 
-        // Spawn background task to read stdout and emit events
-        let workspace_id_owned = workspace_id.to_string();
-        let thread_id_owned = thread_id.to_string();
-        let turn_id_clone = turn_id.clone();
-        tokio::spawn(async move {
-            read_persistent_stdout(
-                reader,
-                workspace_id_owned,
-                thread_id_owned,
-                turn_id_clone,
-                event_sink,
-            ).await;
-        });
-    }
+    // Spawn background task to read stdout and emit events
+    let workspace_id_owned = workspace_id.to_string();
+    let thread_id_owned = thread_id.to_string();
+    let turn_id_clone = turn_id.clone();
+    let event_sink_clone = event_sink.clone();
+    tokio::spawn(async move {
+        read_persistent_stdout(
+            readers.stdout,
+            workspace_id_owned,
+            thread_id_owned,
+            turn_id_clone,
+            event_sink_clone,
+        ).await;
+    });
+
+    // Spawn background task to read stderr and emit error events
+    let workspace_id_for_stderr = workspace_id.to_string();
+    tokio::spawn(async move {
+        read_persistent_stderr(
+            readers.stderr,
+            workspace_id_for_stderr,
+            event_sink,
+        ).await;
+    });
 
     Ok(turn_id)
 }
@@ -952,6 +1005,7 @@ async fn read_persistent_stdout(
     let mut tool_inputs: HashMap<String, Value> = HashMap::new();
     let mut tool_counter: usize = 0;
     let mut thinking_counter: usize = 0;
+    let mut request_id_counter: u64 = 0;
     let mut permission_denials_emitted = false;
     let mut turn_active = false;
 
@@ -1127,15 +1181,29 @@ async fn read_persistent_stdout(
                                 };
                                 // Check for AskUserQuestion - emit request_user_input event
                                 if tool_name == "AskUserQuestion" {
-                                    emit_event(
+                                    request_id_counter += 1;
+                                    // Extract question from tool_input and format for frontend
+                                    let question_text = tool_input
+                                        .get("question")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let questions = json!([{
+                                        "id": tool_id,
+                                        "header": "Claude needs your input",
+                                        "question": question_text,
+                                    }]);
+                                    emit_event_with_id(
                                         &event_sink,
                                         &workspace_id,
-                                        "request_user_input",
+                                        "item/tool/requestUserInput",
+                                        request_id_counter,
                                         json!({
                                             "threadId": thread_id,
                                             "turnId": current_turn_id,
+                                            "itemId": item_id_tool,
                                             "toolUseId": tool_id,
-                                            "params": tool_input,
+                                            "questions": questions,
                                         }),
                                     );
                                 }
@@ -1363,10 +1431,59 @@ async fn read_persistent_stdout(
     }
 }
 
+/// Background task that reads stderr from the persistent Claude CLI session
+/// and emits error events to the frontend.
+async fn read_persistent_stderr(
+    mut reader: AsyncBufReader<tokio::process::ChildStderr>,
+    workspace_id: String,
+    event_sink: TauriEventSink,
+) {
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => {
+                // EOF - process ended
+                break;
+            }
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                // Emit stderr message to frontend
+                emit_event(
+                    &event_sink,
+                    &workspace_id,
+                    "claude/stderr",
+                    json!({ "message": trimmed }),
+                );
+            }
+            Err(_) => {
+                // Error reading - process likely ended
+                break;
+            }
+        }
+    }
+}
+
 fn emit_event(event_sink: &TauriEventSink, workspace_id: &str, method: &str, params: Value) {
     event_sink.emit_app_server_event(AppServerEvent {
         workspace_id: workspace_id.to_string(),
         message: json!({
+            "method": method,
+            "params": params,
+        }),
+    });
+}
+
+fn emit_event_with_id(event_sink: &TauriEventSink, workspace_id: &str, method: &str, id: u64, params: Value) {
+    event_sink.emit_app_server_event(AppServerEvent {
+        workspace_id: workspace_id.to_string(),
+        message: json!({
+            "id": id,
             "method": method,
             "params": params,
         }),

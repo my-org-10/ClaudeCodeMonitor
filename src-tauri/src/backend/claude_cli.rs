@@ -26,6 +26,8 @@ pub(crate) struct WorkspaceSession {
     pub(crate) stdin: Mutex<Option<ChildStdin>>,
     /// Track persistent child process for cleanup and session reuse
     pub(crate) persistent_child: Mutex<Option<Child>>,
+    /// Lock to prevent race conditions when initializing persistent sessions
+    pub(crate) session_init_lock: Mutex<()>,
 }
 
 impl WorkspaceSession {
@@ -182,8 +184,11 @@ impl WorkspaceSession {
 
     /// Kill the persistent session and clean up resources.
     /// This kills the child process and clears the stdin.
-    #[allow(dead_code)]
     pub(crate) async fn kill_persistent_session(&self) -> Result<(), String> {
+        // Flush stdin before killing to ensure pending writes are sent
+        if let Some(ref mut stdin) = *self.stdin.lock().await {
+            let _ = stdin.flush().await;
+        }
         if let Some(mut child) = self.persistent_child.lock().await.take() {
             child.kill().await.map_err(|e| e.to_string())?;
         }
@@ -320,5 +325,6 @@ pub(crate) async fn spawn_workspace_session(
         active_turns: Mutex::new(HashMap::new()),
         stdin: Mutex::new(None),
         persistent_child: Mutex::new(None),
+        session_init_lock: Mutex::new(()),
     }))
 }

@@ -11,7 +11,7 @@ use tokio::time::timeout;
 
 pub(crate) use crate::backend::app_server::WorkspaceSession;
 use crate::backend::app_server::{
-    build_codex_command_with_bin, build_codex_path_env, check_codex_installation,
+    build_claude_command_with_bin, build_claude_path_env, check_claude_installation,
     spawn_workspace_session as spawn_workspace_session_inner,
 };
 use crate::codex_home::{resolve_default_codex_home, resolve_workspace_codex_home};
@@ -52,9 +52,9 @@ pub(crate) async fn codex_doctor(
         .clone()
         .filter(|value| !value.trim().is_empty())
         .or(default_bin);
-    let path_env = build_codex_path_env(resolved.as_deref());
-    let version = check_codex_installation(resolved.clone()).await?;
-    let mut command = build_codex_command_with_bin(resolved.clone());
+    let path_env = build_claude_path_env(resolved.as_deref());
+    let version = check_claude_installation(resolved.clone()).await?;
+    let mut command = build_claude_command_with_bin(resolved.clone());
     command.arg("app-server");
     command.arg("--help");
     command.stdout(std::process::Stdio::piped());
@@ -116,7 +116,7 @@ pub(crate) async fn codex_doctor(
     let details = if app_server_ok {
         None
     } else {
-        Some("Failed to run `codex app-server --help`.".to_string())
+        Some("Failed to run `claude app-server --help`.".to_string())
     };
     Ok(json!({
         "ok": version.is_some() && app_server_ok,

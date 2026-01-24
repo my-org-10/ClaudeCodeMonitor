@@ -8,6 +8,7 @@ import type {
   DebugEntry,
   PermissionDenial,
   RateLimitSnapshot,
+  RequestUserInputRequest,
   ThreadSummary,
   ThreadTokenUsage,
   TurnPlan,
@@ -814,6 +815,9 @@ export function useThreads({
           return;
         }
         dispatch({ type: "addApproval", approval });
+      },
+      onRequestUserInput: (request: RequestUserInputRequest) => {
+        dispatch({ type: "addUserInputRequest", request });
       },
       onPermissionDenied: ({ denials }: { denials: PermissionDenial[] }) => {
         if (denials.length) {

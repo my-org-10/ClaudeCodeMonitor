@@ -839,7 +839,9 @@ pub(crate) async fn remove_workspace(
 
     let parent_path = PathBuf::from(&entry.path);
     for child in &child_worktrees {
-        let _ = state.sessions.lock().await.remove(&child.id);
+        if let Some(session) = state.sessions.lock().await.remove(&child.id) {
+            let _ = session.kill_persistent_session().await;
+        }
         let child_path = PathBuf::from(&child.path);
         if child_path.exists() {
             if let Err(error) = run_git_command(
@@ -862,7 +864,9 @@ pub(crate) async fn remove_workspace(
     }
     let _ = run_git_command(&parent_path, &["worktree", "prune", "--expire", "now"]).await;
 
-    let _ = state.sessions.lock().await.remove(&id);
+    if let Some(session) = state.sessions.lock().await.remove(&id) {
+        let _ = session.kill_persistent_session().await;
+    }
 
     {
         let mut workspaces = state.workspaces.lock().await;
@@ -904,7 +908,9 @@ pub(crate) async fn remove_worktree(
 
     stop_workspace_thread_watcher(&entry.id, &state).await;
 
-    let _ = state.sessions.lock().await.remove(&entry.id);
+    if let Some(session) = state.sessions.lock().await.remove(&entry.id) {
+        let _ = session.kill_persistent_session().await;
+    }
 
     let parent_path = PathBuf::from(&parent.path);
     let entry_path = PathBuf::from(&entry.path);
@@ -1060,6 +1066,9 @@ pub(crate) async fn rename_worktree(
     let was_connected = state.sessions.lock().await.contains_key(&entry_snapshot.id);
     if was_connected {
         if let Some(session) = state.sessions.lock().await.remove(&entry_snapshot.id) {
+            // Kill the persistent session first
+            let _ = session.kill_persistent_session().await;
+            // Then kill any active turns
             let mut active_turns = session.active_turns.lock().await;
             let children = active_turns
                 .drain()
