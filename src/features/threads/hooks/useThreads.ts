@@ -174,6 +174,7 @@ type UseThreadsOptions = {
   effort?: string | null;
   collaborationMode?: Record<string, unknown> | null;
   accessMode?: "read-only" | "current" | "full-access";
+  steerEnabled?: boolean;
   customPrompts?: CustomPromptOption[];
   onMessageActivity?: () => void;
 };
@@ -418,6 +419,7 @@ export function useThreads({
   effort,
   collaborationMode,
   accessMode,
+  steerEnabled = false,
   customPrompts = [],
   onMessageActivity,
 }: UseThreadsOptions) {
@@ -1604,6 +1606,26 @@ export function useThreads({
         }
         finalText = promptExpansion?.expanded ?? messageText;
       }
+      const wasProcessing =
+        (state.threadStatusById[threadId]?.isProcessing ?? false) &&
+        steerEnabled;
+      if (wasProcessing) {
+        const optimisticText = finalText || (images.length > 0 ? "[image]" : "");
+        if (optimisticText) {
+          dispatch({
+            type: "upsertItem",
+            threadId,
+            item: {
+              id: `optimistic-user-${Date.now()}-${Math.random()
+                .toString(36)
+                .slice(2, 8)}`,
+              kind: "message",
+              role: "user",
+              text: optimisticText,
+            },
+          });
+        }
+      }
       Sentry.metrics.count("prompt_sent", 1, {
         attributes: {
           workspace_id: workspace.id,
@@ -1707,6 +1729,8 @@ export function useThreads({
       pushThreadErrorMessage,
       recordThreadActivity,
       safeMessageActivity,
+      state.threadStatusById,
+      steerEnabled,
     ],
   );
 
