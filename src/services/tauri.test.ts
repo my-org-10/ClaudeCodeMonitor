@@ -7,6 +7,7 @@ import {
   getGitStatus,
   stageGitAll,
   respondToServerRequest,
+  respondToUserInputRequest,
   sendUserMessage,
   startReview,
 } from "./tauri";
@@ -136,6 +137,45 @@ describe("tauri invoke wrappers", () => {
       workspaceId: "ws-6",
       requestId: 101,
       result: { decision: "accept" },
+    });
+  });
+
+  it("nests answers for user input responses", async () => {
+    const invokeMock = vi.mocked(invoke);
+    invokeMock.mockResolvedValueOnce({});
+
+    await respondToUserInputRequest("ws-7", 202, {
+      confirm_path: { answers: ["Yes"] },
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("respond_to_server_request", {
+      workspaceId: "ws-7",
+      requestId: 202,
+      result: {
+        answers: {
+          confirm_path: { answers: ["Yes"] },
+        },
+      },
+    });
+  });
+
+  it("passes through multiple user input answers", async () => {
+    const invokeMock = vi.mocked(invoke);
+    invokeMock.mockResolvedValueOnce({});
+
+    const answers = {
+      confirm_path: { answers: ["Yes"] },
+      notes: { answers: ["First line", "Second line"] },
+    };
+
+    await respondToUserInputRequest("ws-8", 303, answers);
+
+    expect(invokeMock).toHaveBeenCalledWith("respond_to_server_request", {
+      workspaceId: "ws-8",
+      requestId: 303,
+      result: {
+        answers,
+      },
     });
   });
 });

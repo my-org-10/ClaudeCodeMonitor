@@ -3,6 +3,7 @@ import type {
   ConversationItem,
   PermissionDenial,
   RateLimitSnapshot,
+  RequestUserInputRequest,
   ThreadSummary,
   ThreadTokenUsage,
   TurnPlan,
@@ -118,6 +119,7 @@ export type ThreadState = {
   activeTurnIdByThread: Record<string, string | null>;
   approvals: ApprovalRequest[];
   permissionDenials: PermissionDenial[];
+  userInputRequests: RequestUserInputRequest[];
   tokenUsageByThread: Record<string, ThreadTokenUsage>;
   rateLimitsByWorkspace: Record<string, RateLimitSnapshot | null>;
   planByThread: Record<string, TurnPlan | null>;
@@ -196,6 +198,8 @@ export type ThreadAction =
   | { type: "removeApproval"; requestId: number; workspaceId: string }
   | { type: "addPermissionDenials"; denials: PermissionDenial[] }
   | { type: "removePermissionDenial"; denialId: string }
+  | { type: "addUserInputRequest"; request: RequestUserInputRequest }
+  | { type: "removeUserInputRequest"; requestId: number; workspaceId: string }
   | { type: "setThreadTokenUsage"; threadId: string; tokenUsage: ThreadTokenUsage }
   | {
       type: "setRateLimits";
@@ -226,6 +230,7 @@ export const initialState: ThreadState = {
   activeTurnIdByThread: {},
   approvals: [],
   permissionDenials: [],
+  userInputRequests: [],
   tokenUsageByThread: {},
   rateLimitsByWorkspace: {},
   planByThread: {},
@@ -864,6 +869,29 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
         permissionDenials: filtered,
       };
     }
+    case "addUserInputRequest": {
+      const exists = state.userInputRequests.some(
+        (item) =>
+          item.request_id === action.request.request_id &&
+          item.workspace_id === action.request.workspace_id,
+      );
+      if (exists) {
+        return state;
+      }
+      return {
+        ...state,
+        userInputRequests: [...state.userInputRequests, action.request],
+      };
+    }
+    case "removeUserInputRequest":
+      return {
+        ...state,
+        userInputRequests: state.userInputRequests.filter(
+          (item) =>
+            item.request_id !== action.requestId ||
+            item.workspace_id !== action.workspaceId,
+        ),
+      };
     case "setThreads": {
       return {
         ...state,

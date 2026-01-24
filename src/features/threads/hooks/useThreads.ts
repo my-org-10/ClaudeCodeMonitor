@@ -45,6 +45,7 @@ import {
 } from "../../../utils/threadItems";
 import { expandCustomPromptText } from "../../../utils/customPrompts";
 import { initialState, threadReducer } from "./useThreadsReducer";
+import { useThreadUserInput } from "./useThreadUserInput";
 
 const STORAGE_KEY_THREAD_ACTIVITY = "codexmonitor.threadLastUserActivity";
 const STORAGE_KEY_PINNED_THREADS = "codexmonitor.pinnedThreads";
@@ -426,6 +427,7 @@ export function useThreads({
   const threadActivityRef = useRef<ThreadActivityMap>(loadThreadActivity());
   const pinnedThreadsRef = useRef<PinnedThreadsMap>(loadPinnedThreads());
   const [pinnedThreadsVersion, setPinnedThreadsVersion] = useState(0);
+  const { handleUserInputSubmit } = useThreadUserInput({ dispatch });
   void pinnedThreadsVersion;
   const pendingInterruptsRef = useRef<Set<string>>(new Set());
   const customNamesRef = useRef<CustomNamesMap>({});
@@ -2032,6 +2034,7 @@ export function useThreads({
     activeItems,
     approvals: state.approvals,
     permissionDenials: state.permissionDenials,
+    userInputRequests: state.userInputRequests,
     threadsByWorkspace: state.threadsByWorkspace,
     threadParentById: state.threadParentById,
     threadStatusById: state.threadStatusById,
@@ -2064,5 +2067,6 @@ export function useThreads({
     handleApprovalRemember,
     handlePermissionRemember,
     handlePermissionDismiss,
+    handleUserInputSubmit,
   };
 }

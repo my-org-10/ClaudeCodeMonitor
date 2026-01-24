@@ -40,6 +40,8 @@ import type {
   PermissionDenial,
   QueuedMessage,
   RateLimitSnapshot,
+  RequestUserInputRequest,
+  RequestUserInputResponse,
   SkillOption,
   ThreadSummary,
   ThreadTokenUsage,
@@ -107,6 +109,7 @@ type LayoutNodesOptions = {
   codeBlockCopyUseModifier: boolean;
   approvals: ApprovalRequest[];
   permissionDenials: PermissionDenial[];
+  userInputRequests: RequestUserInputRequest[];
   handleApprovalDecision: (
     request: ApprovalRequest,
     decision: "accept" | "decline",
@@ -120,6 +123,10 @@ type LayoutNodesOptions = {
     ruleInfo: ApprovalRuleInfo,
   ) => void;
   handlePermissionDismiss: (denial: PermissionDenial) => void;
+  handleUserInputSubmit: (
+    request: RequestUserInputRequest,
+    response: RequestUserInputResponse,
+  ) => void;
   onOpenSettings: () => void;
   onOpenDictationSettings?: () => void;
   onOpenDebug: () => void;
@@ -463,8 +470,11 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
     <Messages
       items={options.activeItems}
       threadId={options.activeThreadId ?? null}
+      workspaceId={options.activeWorkspace?.id ?? null}
       workspacePath={options.activeWorkspace?.path ?? null}
       codeBlockCopyUseModifier={options.codeBlockCopyUseModifier}
+      userInputRequests={options.userInputRequests}
+      onUserInputSubmit={options.handleUserInputSubmit}
       isThinking={
         options.activeThreadId
           ? options.threadStatusById[options.activeThreadId]?.isProcessing ?? false

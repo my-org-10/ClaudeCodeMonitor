@@ -1,5 +1,10 @@
 import { useEffect } from "react";
-import type { AppServerEvent, ApprovalRequest, PermissionDenial } from "../../../types";
+import type {
+  AppServerEvent,
+  ApprovalRequest,
+  PermissionDenial,
+  RequestUserInputRequest,
+} from "../../../types";
 import { subscribeAppServerEvents } from "../../../services/events";
 
 type AgentDelta = {
@@ -26,6 +31,7 @@ type AppServerEventHandlers = {
     turnId: string;
     denials: PermissionDenial[];
   }) => void;
+  onRequestUserInput?: (request: RequestUserInputRequest) => void;
   onAgentMessageDelta?: (event: AgentDelta) => void;
   onAgentMessageStarted?: (event: {
     workspaceId: string;
@@ -93,6 +99,45 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
           request_id: message.id,
           method,
           params: (message.params as Record<string, unknown>) ?? {},
+        });
+        return;
+      }
+
+      if (method === "item/tool/requestUserInput" && typeof message.id === "number") {
+        const params = (message.params as Record<string, unknown>) ?? {};
+        const questionsRaw = Array.isArray(params.questions) ? params.questions : [];
+        const questions = questionsRaw
+          .map((entry) => {
+            const question = entry as Record<string, unknown>;
+            const optionsRaw = Array.isArray(question.options) ? question.options : [];
+            const options = optionsRaw
+              .map((option) => {
+                const record = option as Record<string, unknown>;
+                const label = String(record.label ?? "").trim();
+                const description = String(record.description ?? "").trim();
+                if (!label && !description) {
+                  return null;
+                }
+                return { label, description };
+              })
+              .filter((option): option is { label: string; description: string } => Boolean(option));
+            return {
+              id: String(question.id ?? "").trim(),
+              header: String(question.header ?? ""),
+              question: String(question.question ?? ""),
+              options: options.length ? options : undefined,
+            };
+          })
+          .filter((question) => question.id);
+        handlers.onRequestUserInput?.({
+          workspace_id,
+          request_id: message.id,
+          params: {
+            thread_id: String(params.threadId ?? params.thread_id ?? ""),
+            turn_id: String(params.turnId ?? params.turn_id ?? ""),
+            item_id: String(params.itemId ?? params.item_id ?? ""),
+            questions,
+          },
         });
         return;
       }
