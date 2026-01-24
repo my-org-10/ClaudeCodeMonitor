@@ -131,11 +131,11 @@ describe("tauri invoke wrappers", () => {
     const invokeMock = vi.mocked(invoke);
     invokeMock.mockResolvedValueOnce({});
 
-    await respondToServerRequest("ws-6", 101, "accept");
+    await respondToServerRequest("ws-6", "toolu_123", "accept");
 
     expect(invokeMock).toHaveBeenCalledWith("respond_to_server_request", {
       workspaceId: "ws-6",
-      requestId: 101,
+      toolUseId: "toolu_123",
       result: { decision: "accept" },
     });
   });
@@ -144,13 +144,13 @@ describe("tauri invoke wrappers", () => {
     const invokeMock = vi.mocked(invoke);
     invokeMock.mockResolvedValueOnce({});
 
-    await respondToUserInputRequest("ws-7", 202, {
+    await respondToUserInputRequest("ws-7", "toolu_456", {
       confirm_path: { answers: ["Yes"] },
     });
 
     expect(invokeMock).toHaveBeenCalledWith("respond_to_server_request", {
       workspaceId: "ws-7",
-      requestId: 202,
+      toolUseId: "toolu_456",
       result: {
         answers: {
           confirm_path: { answers: ["Yes"] },
@@ -168,11 +168,11 @@ describe("tauri invoke wrappers", () => {
       notes: { answers: ["First line", "Second line"] },
     };
 
-    await respondToUserInputRequest("ws-8", 303, answers);
+    await respondToUserInputRequest("ws-8", "toolu_789", answers);
 
     expect(invokeMock).toHaveBeenCalledWith("respond_to_server_request", {
       workspaceId: "ws-8",
-      requestId: 303,
+      toolUseId: "toolu_789",
       result: {
         answers,
       },

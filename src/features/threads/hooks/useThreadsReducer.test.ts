@@ -105,6 +105,7 @@ describe("threadReducer", () => {
         thread_id: "thread-1",
         turn_id: "turn-1",
         item_id: "call-1",
+        tool_use_id: "toolu_123",
         questions: [{ id: "q1", header: "Confirm", question: "Proceed?" }],
       },
     };
@@ -293,6 +294,7 @@ describe("threadReducer", () => {
         thread_id: "thread-1",
         turn_id: "turn-1",
         item_id: "item-1",
+        tool_use_id: "toolu_aaa",
         questions: [],
       },
     };
@@ -303,6 +305,7 @@ describe("threadReducer", () => {
         thread_id: "thread-2",
         turn_id: "turn-2",
         item_id: "item-2",
+        tool_use_id: "toolu_bbb",
         questions: [],
       },
     };

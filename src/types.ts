@@ -152,6 +152,7 @@ export type ClaudeDoctorResult = {
 export type ApprovalRequest = {
   workspace_id: string;
   request_id: number;
+  tool_use_id: string;
   method: string;
   params: Record<string, unknown>;
 };
@@ -182,6 +183,7 @@ export type RequestUserInputParams = {
   thread_id: string;
   turn_id: string;
   item_id: string;
+  tool_use_id: string;
   questions: RequestUserInputQuestion[];
 };
 

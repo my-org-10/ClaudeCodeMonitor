@@ -507,7 +507,7 @@ pub(crate) async fn skills_list(
 #[tauri::command]
 pub(crate) async fn respond_to_server_request(
     workspace_id: String,
-    request_id: u64,
+    tool_use_id: String,
     result: Value,
     state: State<'_, AppState>,
     app: AppHandle,
@@ -517,7 +517,7 @@ pub(crate) async fn respond_to_server_request(
             &*state,
             app,
             "respond_to_server_request",
-            json!({ "workspaceId": workspace_id, "requestId": request_id, "result": result }),
+            json!({ "workspaceId": workspace_id, "toolUseId": tool_use_id, "result": result }),
         )
         .await?;
         return Ok(());
@@ -527,7 +527,7 @@ pub(crate) async fn respond_to_server_request(
     let session = sessions
         .get(&workspace_id)
         .ok_or("workspace not connected")?;
-    session.send_response(request_id, result).await
+    session.send_response(tool_use_id, result).await
 }
 
 /// Gets the diff content for commit message generation

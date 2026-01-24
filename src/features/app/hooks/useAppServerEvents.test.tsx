@@ -84,15 +84,16 @@ describe("useAppServerEvents", () => {
         message: {
           method: "workspace/requestApproval",
           id: 7,
-          params: { mode: "full" },
+          params: { mode: "full", toolUseId: "toolu_approval_123" },
         },
       });
     });
     expect(handlers.onApprovalRequest).toHaveBeenCalledWith({
       workspace_id: "ws-1",
       request_id: 7,
+      tool_use_id: "toolu_approval_123",
       method: "workspace/requestApproval",
-      params: { mode: "full" },
+      params: { mode: "full", toolUseId: "toolu_approval_123" },
     });
 
     act(() => {
@@ -127,6 +128,7 @@ describe("useAppServerEvents", () => {
         thread_id: "thread-1",
         turn_id: "turn-1",
         item_id: "call-1",
+        tool_use_id: "",
         questions: [
           {
             id: "confirm_path",
@@ -220,6 +222,7 @@ describe("useAppServerEvents", () => {
         thread_id: "thread-9",
         turn_id: "turn-9",
         item_id: "item-9",
+        tool_use_id: "",
         questions: [
           {
             id: "q-1",

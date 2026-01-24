@@ -180,24 +180,24 @@ export async function startReview(
 
 export async function respondToServerRequest(
   workspaceId: string,
-  requestId: number,
+  toolUseId: string,
   decision: "accept" | "decline",
 ) {
   return invoke("respond_to_server_request", {
     workspaceId,
-    requestId,
+    toolUseId,
     result: { decision },
   });
 }
 
 export async function respondToUserInputRequest(
   workspaceId: string,
-  requestId: number,
+  toolUseId: string,
   answers: Record<string, { answers: string[] }>,
 ) {
   return invoke("respond_to_server_request", {
     workspaceId,
-    requestId,
+    toolUseId,
     result: { answers },
   });
 }

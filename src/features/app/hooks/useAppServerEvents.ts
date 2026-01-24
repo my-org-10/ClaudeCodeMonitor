@@ -94,11 +94,14 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
       }
 
       if (method.includes("requestApproval") && typeof message.id === "number") {
+        const params = (message.params as Record<string, unknown>) ?? {};
+        const toolUseId = String(params.toolUseId ?? params.tool_use_id ?? "");
         handlers.onApprovalRequest?.({
           workspace_id,
           request_id: message.id,
+          tool_use_id: toolUseId,
           method,
-          params: (message.params as Record<string, unknown>) ?? {},
+          params,
         });
         return;
       }
@@ -136,6 +139,7 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
             thread_id: String(params.threadId ?? params.thread_id ?? ""),
             turn_id: String(params.turnId ?? params.turn_id ?? ""),
             item_id: String(params.itemId ?? params.item_id ?? ""),
+            tool_use_id: String(params.toolUseId ?? params.tool_use_id ?? ""),
             questions,
           },
         });

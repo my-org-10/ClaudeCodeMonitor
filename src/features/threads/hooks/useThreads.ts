@@ -808,7 +808,7 @@ export function useThreads({
         ) {
           void respondToServerRequest(
             approval.workspace_id,
-            approval.request_id,
+            approval.tool_use_id,
             "accept",
           );
           return;
@@ -1923,7 +1923,7 @@ export function useThreads({
     async (request: ApprovalRequest, decision: "accept" | "decline") => {
       await respondToServerRequest(
         request.workspace_id,
-        request.request_id,
+        request.tool_use_id,
         decision,
       );
       dispatch({
@@ -1955,7 +1955,7 @@ export function useThreads({
 
       await respondToServerRequest(
         request.workspace_id,
-        request.request_id,
+        request.tool_use_id,
         "accept",
       );
       dispatch({

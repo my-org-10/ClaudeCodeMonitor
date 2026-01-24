@@ -13,7 +13,7 @@ export function useThreadUserInput({ dispatch }: UseThreadUserInputOptions) {
     async (request: RequestUserInputRequest, response: RequestUserInputResponse) => {
       await respondToUserInputRequest(
         request.workspace_id,
-        request.request_id,
+        request.params.tool_use_id,
         response.answers,
       );
       dispatch({
