@@ -15,6 +15,7 @@ export function useThreadUserInput({ dispatch }: UseThreadUserInputOptions) {
 
       await respondToUserInputRequest(
         request.workspace_id,
+        request.params.thread_id,
         toolUseId,
         response.answers,
       );

@@ -807,8 +807,10 @@ export function useThreads({
           commandInfo &&
           matchesCommandPrefix(commandInfo.tokens, allowlist)
         ) {
+          const threadId = String(approval.params.threadId ?? approval.params.thread_id ?? "");
           void respondToServerRequest(
             approval.workspace_id,
+            threadId,
             approval.tool_use_id,
             "accept",
           );
@@ -1925,8 +1927,10 @@ export function useThreads({
 
   const handleApprovalDecision = useCallback(
     async (request: ApprovalRequest, decision: "accept" | "decline") => {
+      const threadId = String(request.params.threadId ?? request.params.thread_id ?? "");
       await respondToServerRequest(
         request.workspace_id,
+        threadId,
         request.tool_use_id,
         decision,
       );
@@ -1957,8 +1961,10 @@ export function useThreads({
         rememberApprovalPrefix(request.workspace_id, ruleInfo.commandTokens);
       }
 
+      const threadId = String(request.params.threadId ?? request.params.thread_id ?? "");
       await respondToServerRequest(
         request.workspace_id,
+        threadId,
         request.tool_use_id,
         "accept",
       );

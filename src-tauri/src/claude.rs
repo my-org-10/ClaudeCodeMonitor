@@ -360,8 +360,11 @@ pub(crate) async fn send_user_message(
         event_sink,
     ).await?;
 
+    // Set the pending turn ID so the reader knows which turn_id to use
+    session.set_pending_turn_id(&thread_id, turn_id.clone()).await;
+
     // Send the user message via stdin
-    session.send_message(&prompt).await?;
+    session.send_message(&thread_id, &prompt).await?;
 
     Ok(json!({
         "result": {
@@ -459,8 +462,11 @@ pub(crate) async fn start_review(
         event_sink,
     ).await?;
 
+    // Set the pending turn ID so the reader knows which turn_id to use
+    session.set_pending_turn_id(&thread_id, turn_id.clone()).await;
+
     // Send the review prompt via stdin
-    session.send_message(&prompt).await?;
+    session.send_message(&thread_id, &prompt).await?;
 
     Ok(json!({
         "result": {
@@ -550,6 +556,7 @@ pub(crate) async fn skills_list(
 #[tauri::command]
 pub(crate) async fn respond_to_server_request(
     workspace_id: String,
+    thread_id: String,
     tool_use_id: String,
     result: Value,
     state: State<'_, AppState>,
@@ -560,7 +567,7 @@ pub(crate) async fn respond_to_server_request(
             &*state,
             app,
             "respond_to_server_request",
-            json!({ "workspaceId": workspace_id, "toolUseId": tool_use_id, "result": result }),
+            json!({ "workspaceId": workspace_id, "threadId": thread_id, "toolUseId": tool_use_id, "result": result }),
         )
         .await?;
         return Ok(());
@@ -570,7 +577,7 @@ pub(crate) async fn respond_to_server_request(
     let session = sessions
         .get(&workspace_id)
         .ok_or("workspace not connected")?;
-    session.send_response(tool_use_id, result).await
+    session.send_response(&thread_id, tool_use_id, result).await
 }
 
 /// Gets the diff content for commit message generation
@@ -870,6 +877,7 @@ pub(crate) async fn spawn_persistent_claude_session(
     command.arg("--print");
     command.arg("--input-format").arg("stream-json");
     command.arg("--output-format").arg("stream-json");
+    command.arg("--include-partial-messages");
     command.arg("--verbose");
 
     // Set model if specified
@@ -880,9 +888,23 @@ pub(crate) async fn spawn_persistent_claude_session(
     }
 
     // Set permission mode if specified
+    // Map UI access modes to valid Claude CLI permission modes:
+    // - "read-only" → "plan" (requires plan approval, safest)
+    // - "current" → skip (use CLI default)
+    // - "full-access" → "dontAsk" (auto-approve all actions)
+    // Also accept direct CLI modes: acceptEdits, bypassPermissions, default, delegate, dontAsk, plan
     if let Some(mode) = access_mode {
-        if !mode.trim().is_empty() {
-            command.arg("--permission-mode").arg(mode);
+        let mode_trimmed = mode.trim();
+        let mapped_mode = match mode_trimmed {
+            "read-only" => Some("plan"),
+            "full-access" => Some("dontAsk"),
+            "current" => None, // Use CLI default
+            // Direct CLI modes pass through
+            "acceptEdits" | "bypassPermissions" | "default" | "delegate" | "dontAsk" | "plan" => Some(mode_trimmed),
+            _ => None, // Unknown modes are ignored
+        };
+        if let Some(cli_mode) = mapped_mode {
+            command.arg("--permission-mode").arg(cli_mode);
         }
     }
 
@@ -907,9 +929,8 @@ pub(crate) async fn spawn_persistent_claude_session(
         format!("Failed to spawn Claude CLI: {}", err)
     })?;
 
-    // Take stdin and store it in the session for later use
+    // Take stdin for bidirectional communication
     let stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
-    session.set_stdin(stdin).await;
 
     // Take stdout for reading responses
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
@@ -919,8 +940,8 @@ pub(crate) async fn spawn_persistent_claude_session(
     let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
     let stderr_reader = AsyncBufReader::new(stderr);
 
-    // Store child process in session for cleanup
-    session.set_persistent_child(child).await;
+    // Store the persistent session for this thread (stdin + child)
+    session.set_persistent_session(thread_id.to_string(), stdin, child).await;
 
     Ok(PersistentSessionReaders {
         stdout: stdout_reader,
@@ -929,10 +950,11 @@ pub(crate) async fn spawn_persistent_claude_session(
 }
 
 /// Ensures a persistent session exists for the given workspace and thread.
-/// If no session exists, spawns one and starts the background stdout reader.
+/// If no session exists for this thread, spawns one and starts the background stdout reader.
 ///
-/// Uses double-checked locking to prevent race conditions where multiple
-/// concurrent callers could both spawn duplicate sessions.
+/// Each thread gets its own persistent session, allowing multiple threads to run in parallel.
+/// Uses locking to prevent race conditions where multiple concurrent callers could
+/// spawn duplicate sessions for the same thread.
 ///
 /// Returns the turn_id for the current turn.
 async fn ensure_persistent_session(
@@ -947,14 +969,15 @@ async fn ensure_persistent_session(
     // Acquire the session initialization lock to prevent race conditions
     let _init_guard = session.session_init_lock.lock().await;
 
-    // Re-check after acquiring lock (another caller may have initialized while we waited)
-    if session.has_persistent_session().await {
-        // Another caller already initialized, just return a new turn_id
+    // Check if a persistent session already exists for THIS thread
+    if session.has_persistent_session(thread_id).await {
+        // Session exists for this thread, just return a new turn_id
         return Ok(Uuid::new_v4().to_string());
     }
 
     let turn_id = Uuid::new_v4().to_string();
 
+    // Spawn a new persistent session for this thread
     let readers = spawn_persistent_claude_session(session, thread_id, model, access_mode, max_thinking_tokens).await?;
 
     // Spawn background task to read stdout and emit events
@@ -962,22 +985,28 @@ async fn ensure_persistent_session(
     let thread_id_owned = thread_id.to_string();
     let turn_id_clone = turn_id.clone();
     let event_sink_clone = event_sink.clone();
+    let session_clone = Arc::clone(session);
     tokio::spawn(async move {
         read_persistent_stdout(
             readers.stdout,
             workspace_id_owned,
             thread_id_owned,
             turn_id_clone,
+            session_clone,
             event_sink_clone,
         ).await;
     });
 
     // Spawn background task to read stderr and emit error events
     let workspace_id_for_stderr = workspace_id.to_string();
+    let thread_id_for_stderr = thread_id.to_string();
+    let session_for_stderr = Arc::clone(session);
     tokio::spawn(async move {
         read_persistent_stderr(
             readers.stderr,
             workspace_id_for_stderr,
+            thread_id_for_stderr,
+            session_for_stderr,
             event_sink,
         ).await;
     });
@@ -992,6 +1021,7 @@ async fn read_persistent_stdout(
     workspace_id: String,
     thread_id: String,
     initial_turn_id: String,
+    session: Arc<WorkspaceSession>,
     event_sink: TauriEventSink,
 ) {
     let mut current_turn_id = initial_turn_id;
@@ -1084,7 +1114,12 @@ async fn read_persistent_stdout(
                 // Start a new turn if we receive an assistant message and no turn is active
                 if event_type == "assistant" && !turn_active {
                     turn_active = true;
-                    current_turn_id = Uuid::new_v4().to_string();
+                    // Use pending_turn_id from session if available, otherwise generate new one
+                    // This ensures turn_id returned by send_user_message matches emitted events
+                    current_turn_id = session
+                        .take_pending_turn_id(&thread_id)
+                        .await
+                        .unwrap_or_else(|| Uuid::new_v4().to_string());
                     item_id = format!("{current_turn_id}-assistant");
                     full_text.clear();
                     last_text.clear();
@@ -1182,17 +1217,38 @@ async fn read_persistent_stdout(
                                 // Check for AskUserQuestion - emit request_user_input event
                                 if tool_name == "AskUserQuestion" {
                                     request_id_counter += 1;
-                                    // Extract question from tool_input and format for frontend
-                                    let question_text = tool_input
-                                        .get("question")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let questions = json!([{
-                                        "id": tool_id,
-                                        "header": "Claude needs your input",
-                                        "question": question_text,
-                                    }]);
+                                    // Extract questions array from tool_input
+                                    // Claude's AskUserQuestion tool has structure:
+                                    // { "questions": [{ "question": "...", "header": "...", "options": [{ "label": "...", "description": "..." }] }] }
+                                    let questions_raw = tool_input.get("questions").and_then(|v| v.as_array());
+                                    let questions = if let Some(q_array) = questions_raw {
+                                        // Map each question, adding the tool_id as the id for each
+                                        q_array.iter().enumerate().map(|(idx, q)| {
+                                            let id = if idx == 0 {
+                                                tool_id.to_string()
+                                            } else {
+                                                format!("{}-{}", tool_id, idx)
+                                            };
+                                            json!({
+                                                "id": id,
+                                                "header": q.get("header").and_then(|v| v.as_str()).unwrap_or("Claude needs your input"),
+                                                "question": q.get("question").and_then(|v| v.as_str()).unwrap_or(""),
+                                                "options": q.get("options").cloned().unwrap_or(Value::Null),
+                                            })
+                                        }).collect::<Vec<_>>()
+                                    } else {
+                                        // Fallback for legacy single question format
+                                        let question_text = tool_input
+                                            .get("question")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        vec![json!({
+                                            "id": tool_id,
+                                            "header": "Claude needs your input",
+                                            "question": question_text,
+                                        })]
+                                    };
                                     emit_event_with_id(
                                         &event_sink,
                                         &workspace_id,
@@ -1436,6 +1492,8 @@ async fn read_persistent_stdout(
 async fn read_persistent_stderr(
     mut reader: AsyncBufReader<tokio::process::ChildStderr>,
     workspace_id: String,
+    thread_id: String,
+    session: Arc<WorkspaceSession>,
     event_sink: TauriEventSink,
 ) {
     let mut line = String::new();
@@ -1444,7 +1502,8 @@ async fn read_persistent_stderr(
         line.clear();
         match reader.read_line(&mut line).await {
             Ok(0) => {
-                // EOF - process ended
+                // EOF - process ended, cleanup the session for this thread
+                let _ = session.kill_persistent_session(&thread_id).await;
                 break;
             }
             Ok(_) => {
@@ -1458,11 +1517,12 @@ async fn read_persistent_stderr(
                     &event_sink,
                     &workspace_id,
                     "claude/stderr",
-                    json!({ "message": trimmed }),
+                    json!({ "message": trimmed, "threadId": thread_id }),
                 );
             }
             Err(_) => {
-                // Error reading - process likely ended
+                // Error reading - process likely ended, cleanup
+                let _ = session.kill_persistent_session(&thread_id).await;
                 break;
             }
         }
