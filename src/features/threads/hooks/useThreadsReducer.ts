@@ -200,6 +200,7 @@ export type ThreadAction =
   | { type: "removePermissionDenial"; denialId: string }
   | { type: "addUserInputRequest"; request: RequestUserInputRequest }
   | { type: "removeUserInputRequest"; requestId: number; workspaceId: string }
+  | { type: "clearUserInputRequestsForThread"; threadId: string; workspaceId: string }
   | { type: "setThreadTokenUsage"; threadId: string; tokenUsage: ThreadTokenUsage }
   | {
       type: "setRateLimits";
@@ -892,6 +893,20 @@ export function threadReducer(state: ThreadState, action: ThreadAction): ThreadS
             item.workspace_id !== action.workspaceId,
         ),
       };
+    case "clearUserInputRequestsForThread": {
+      const filtered = state.userInputRequests.filter(
+        (item) =>
+          item.params.thread_id !== action.threadId ||
+          item.workspace_id !== action.workspaceId,
+      );
+      if (filtered.length === state.userInputRequests.length) {
+        return state;
+      }
+      return {
+        ...state,
+        userInputRequests: filtered,
+      };
+    }
     case "setThreads": {
       return {
         ...state,

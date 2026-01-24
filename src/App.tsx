@@ -584,6 +584,7 @@ function MainApp() {
     handleApprovalDecision,
     handleApprovalRemember,
     handlePermissionRemember,
+    handlePermissionRetry,
     handlePermissionDismiss,
     handleUserInputSubmit,
   } = useThreads({
@@ -1372,6 +1373,7 @@ function MainApp() {
     handleApprovalDecision,
     handleApprovalRemember,
     handlePermissionRemember,
+    handlePermissionRetry,
     handlePermissionDismiss,
     handleUserInputSubmit,
     onOpenSettings: () => openSettings(),

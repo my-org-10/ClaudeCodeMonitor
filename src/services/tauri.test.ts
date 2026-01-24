@@ -141,6 +141,20 @@ describe("tauri invoke wrappers", () => {
     });
   });
 
+  it("includes request ids for approval decisions when provided", async () => {
+    const invokeMock = vi.mocked(invoke);
+    invokeMock.mockResolvedValueOnce({});
+
+    await respondToServerRequest("ws-6", "thread-6", "toolu_123", "accept", 44);
+
+    expect(invokeMock).toHaveBeenCalledWith("respond_to_server_request", {
+      workspaceId: "ws-6",
+      threadId: "thread-6",
+      toolUseId: "toolu_123",
+      result: { decision: "accept", requestId: 44, request_id: 44 },
+    });
+  });
+
   it("nests answers for user input responses", async () => {
     const invokeMock = vi.mocked(invoke);
     invokeMock.mockResolvedValueOnce({});

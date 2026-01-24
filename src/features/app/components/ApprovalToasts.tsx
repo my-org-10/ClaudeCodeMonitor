@@ -10,6 +10,7 @@ type ApprovalToastsProps = {
   onDecision: (request: ApprovalRequest, decision: "accept" | "decline") => void;
   onRemember?: (request: ApprovalRequest, ruleInfo: ApprovalRuleInfo) => void;
   onPermissionRemember?: (denial: PermissionDenial, ruleInfo: ApprovalRuleInfo) => void;
+  onPermissionRetry?: (denial: PermissionDenial, ruleInfo: ApprovalRuleInfo) => void;
   onPermissionDismiss?: (denial: PermissionDenial) => void;
 };
 
@@ -20,6 +21,7 @@ export function ApprovalToasts({
   onDecision,
   onRemember,
   onPermissionRemember,
+  onPermissionRetry,
   onPermissionDismiss,
 }: ApprovalToastsProps) {
   const workspaceLabels = useMemo(
@@ -229,6 +231,15 @@ export function ApprovalToasts({
                   title={ruleInfo.label}
                 >
                   Always allow
+                </button>
+              ) : null}
+              {ruleInfo && onPermissionRetry ? (
+                <button
+                  className="primary"
+                  onClick={() => onPermissionRetry(denial, ruleInfo)}
+                  title={ruleInfo.label}
+                >
+                  Allow & Retry
                 </button>
               ) : null}
             </div>

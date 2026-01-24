@@ -271,6 +271,9 @@ export function buildConversationItem(
       })
       .filter(Boolean);
     const paths = formattedChanges.join(", ");
+    const fallbackOutput = asString(
+      item.aggregatedOutput ?? item.output ?? "",
+    );
     const diffOutput = normalizedChanges
       .map((change) => change.diff ?? "")
       .filter(Boolean)
@@ -280,9 +283,9 @@ export function buildConversationItem(
       kind: "tool",
       toolType: type,
       title: "File changes",
-      detail: paths || "Pending changes",
+      detail: paths || (fallbackOutput ? "" : "Pending changes"),
       status: asString(item.status ?? ""),
-      output: diffOutput,
+      output: diffOutput || fallbackOutput,
       changes: normalizedChanges,
     };
   }
@@ -329,14 +332,15 @@ export function buildConversationItem(
     };
   }
   if (type === "webSearch") {
+    const output = asString(item.aggregatedOutput ?? item.output ?? "");
     return {
       id,
       kind: "tool",
       toolType: type,
       title: "Web search",
       detail: asString(item.query ?? ""),
-      status: "",
-      output: "",
+      status: asString(item.status ?? ""),
+      output,
     };
   }
   if (type === "imageView") {

@@ -13,12 +13,21 @@ export function useThreadUserInput({ dispatch }: UseThreadUserInputOptions) {
     async (request: RequestUserInputRequest, response: RequestUserInputResponse) => {
       const toolUseId = request.params.tool_use_id || String(request.request_id);
 
-      await respondToUserInputRequest(
-        request.workspace_id,
-        request.params.thread_id,
-        toolUseId,
-        response.answers,
-      );
+      try {
+        await respondToUserInputRequest(
+          request.workspace_id,
+          request.params.thread_id,
+          toolUseId,
+          response.answers,
+        );
+      } catch (error) {
+        // Log error but still remove the request from UI.
+        // The session may have ended (permission denied, turn completed, or process crashed)
+        // before the user could submit their response.
+        console.error("[useThreadUserInput] Failed to submit user input:", error);
+      }
+      // Always remove the request from UI, even on error.
+      // If the backend rejected it, the turn has already moved on.
       dispatch({
         type: "removeUserInputRequest",
         requestId: request.request_id,

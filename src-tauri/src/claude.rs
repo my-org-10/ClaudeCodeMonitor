@@ -577,7 +577,19 @@ pub(crate) async fn respond_to_server_request(
     let session = sessions
         .get(&workspace_id)
         .ok_or("workspace not connected")?;
-    session.send_response(&thread_id, tool_use_id, result).await
+
+    if let Some(decision) = result.get("decision").and_then(|value| value.as_str()) {
+        let request_id = result
+            .get("request_id")
+            .or_else(|| result.get("requestId"))
+            .or_else(|| result.get("id"))
+            .cloned();
+        session
+            .send_permission_response(&thread_id, tool_use_id, decision, request_id)
+            .await
+    } else {
+        session.send_response(&thread_id, tool_use_id, result).await
+    }
 }
 
 /// Gets the diff content for commit message generation
@@ -891,13 +903,13 @@ pub(crate) async fn spawn_persistent_claude_session(
     // Map UI access modes to valid Claude CLI permission modes:
     // - "read-only" → "plan" (requires plan approval, safest)
     // - "current" → skip (use CLI default)
-    // - "full-access" → "dontAsk" (auto-approve all actions)
+    // - "full-access" → "bypassPermissions" (bypass all permission checks)
     // Also accept direct CLI modes: acceptEdits, bypassPermissions, default, delegate, dontAsk, plan
     if let Some(mode) = access_mode {
         let mode_trimmed = mode.trim();
         let mapped_mode = match mode_trimmed {
             "read-only" => Some("plan"),
-            "full-access" => Some("dontAsk"),
+            "full-access" => Some("bypassPermissions"),
             "current" => None, // Use CLI default
             // Direct CLI modes pass through
             "acceptEdits" | "bypassPermissions" | "default" | "delegate" | "dontAsk" | "plan" => Some(mode_trimmed),
@@ -945,7 +957,7 @@ pub(crate) async fn spawn_persistent_claude_session(
     let stored_permission_mode = access_mode.map(|mode| {
         match mode {
             "read-only" => "plan".to_string(),
-            "full-access" => "dontAsk".to_string(),
+            "full-access" => "bypassPermissions".to_string(),
             "current" => "default".to_string(),
             other => other.to_string(),
         }
@@ -984,7 +996,7 @@ async fn ensure_persistent_session(
     let requested_permission_mode = access_mode.map(|mode| {
         match mode {
             "read-only" => "plan".to_string(),
-            "full-access" => "dontAsk".to_string(),
+            "full-access" => "bypassPermissions".to_string(),
             "current" => "default".to_string(),
             other => other.to_string(),
         }
@@ -1094,7 +1106,7 @@ async fn read_persistent_stdout(
     let mut tool_counter: usize = 0;
     let mut thinking_counter: usize = 0;
     let mut request_id_counter: u64 = 0;
-    let mut permission_denials_emitted = false;
+    let mut permission_denial_ids: HashSet<String> = HashSet::new();
     let mut turn_active = false;
 
     let mut line = String::new();
@@ -1134,10 +1146,93 @@ async fn read_persistent_stdout(
                 }
 
                 let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let subtype = value.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+
+                let is_permission_request = matches!(
+                    event_type,
+                    "permission_request" | "permission-request" | "permissionRequest"
+                ) || (
+                    event_type == "permission"
+                        && matches!(subtype, "request" | "permission_request" | "permission-request")
+                ) || (
+                    event_type == "system"
+                        && matches!(subtype, "permission_request" | "permission-request")
+                );
+
+                if is_permission_request {
+                    let request_id = value
+                        .get("id")
+                        .and_then(value_to_u64)
+                        .or_else(|| value.get("request_id").and_then(value_to_u64))
+                        .or_else(|| value.get("requestId").and_then(value_to_u64))
+                        .unwrap_or_else(|| {
+                            request_id_counter += 1;
+                            request_id_counter
+                        });
+                    let tool_use_id = value
+                        .get("tool_use_id")
+                        .or_else(|| value.get("toolUseId"))
+                        .or_else(|| value.get("toolUseID"))
+                        .and_then(|v| v.as_str())
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| request_id.to_string());
+                    let tool_name = value
+                        .get("tool_name")
+                        .or_else(|| value.get("toolName"))
+                        .or_else(|| value.get("tool"))
+                        .or_else(|| value.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Tool")
+                        .trim()
+                        .to_string();
+                    let tool_input = value
+                        .get("tool_input")
+                        .or_else(|| value.get("toolInput"))
+                        .or_else(|| value.get("input"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+
+                    let mut params = json!({
+                        "threadId": thread_id,
+                        "turnId": current_turn_id,
+                        "toolUseId": tool_use_id,
+                        "tool_name": tool_name.clone(),
+                        "toolInput": tool_input.clone(),
+                    });
+                    if let Some(command) = tool_input.get("command").and_then(|v| v.as_str()) {
+                        if let Some(record) = params.as_object_mut() {
+                            record.insert("command".to_string(), Value::String(command.to_string()));
+                        }
+                    }
+                    if let Some(args) = tool_input.get("args").and_then(|v| v.as_array()) {
+                        if let Some(record) = params.as_object_mut() {
+                            record.insert("args".to_string(), Value::Array(args.clone()));
+                        }
+                    }
+                    if let Some(argv) = tool_input.get("argv").and_then(|v| v.as_array()) {
+                        if let Some(record) = params.as_object_mut() {
+                            record.insert("argv".to_string(), Value::Array(argv.clone()));
+                        }
+                    }
+
+                    let method = if tool_name.is_empty() {
+                        "claude/requestApproval".to_string()
+                    } else {
+                        format!("claude/requestApproval/{tool_name}")
+                    };
+
+                    emit_event_with_id(
+                        &event_sink,
+                        &workspace_id,
+                        &method,
+                        request_id,
+                        params,
+                    );
+                    continue;
+                }
 
                 // Handle system init event
                 if event_type == "system" {
-                    let subtype = value.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
                     if subtype == "init" {
                         // Extract session info from init event
                         let session_id = value
@@ -1188,7 +1283,7 @@ async fn read_persistent_stdout(
                     tool_inputs.clear();
                     tool_counter = 0;
                     thinking_counter = 0;
-                    permission_denials_emitted = false;
+                    permission_denial_ids.clear();
 
                     emit_event(
                         &event_sink,
@@ -1328,13 +1423,14 @@ async fn read_persistent_stdout(
                                     "item/started",
                                     json!({
                                         "threadId": thread_id,
-                                        "item": {
-                                            "id": item_id_tool,
-                                            "type": "commandExecution",
-                                            "command": [tool_name],
-                                            "status": "running",
-                                            "toolInput": tool_input,
-                                        }
+                                        "item": build_tool_item(
+                                            &item_id_tool,
+                                            &tool_name,
+                                            &tool_input,
+                                            "running",
+                                            None,
+                                            None,
+                                        ),
                                     }),
                                 );
                             }
@@ -1368,7 +1464,7 @@ async fn read_persistent_stdout(
                 } else if event_type == "user" {
                     if let Some(message) = value.get("message") {
                         if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
-                            for entry in content {
+                            for (index, entry) in content.iter().enumerate() {
                                 if entry.get("type").and_then(|v| v.as_str()) != Some("tool_result") {
                                     continue;
                                 }
@@ -1379,6 +1475,10 @@ async fn read_persistent_stdout(
                                     .unwrap_or("");
                                 let content_value = entry.get("content").cloned().unwrap_or(Value::Null);
                                 let mut output = tool_result_output(&content_value);
+                                let is_error = entry
+                                    .get("is_error")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
                                 if output.trim().is_empty() {
                                     if let Some(fallback) = value
                                         .get("toolUseResult")
@@ -1390,6 +1490,11 @@ async fn read_persistent_stdout(
                                             .unwrap_or_else(|| tool_result_output(fallback));
                                     }
                                 }
+                                let output_lower = output.to_lowercase();
+                                let is_permission_denial = is_error
+                                    && (output_lower.contains("requested permissions")
+                                        || output_lower.contains("haven't granted"));
+                                let result_value = tool_result_value(&content_value, &value);
                                 let command = tool_names
                                     .get(tool_use_id)
                                     .cloned()
@@ -1398,6 +1503,29 @@ async fn read_persistent_stdout(
                                     .get(tool_use_id)
                                     .cloned()
                                     .unwrap_or(Value::Null);
+                                if is_permission_denial {
+                                    let denial_id = if tool_use_id.is_empty() {
+                                        format!("{thread_id}-{command}-{index}")
+                                    } else {
+                                        tool_use_id.to_string()
+                                    };
+                                    if permission_denial_ids.insert(denial_id) {
+                                        emit_event(
+                                            &event_sink,
+                                            &workspace_id,
+                                            "turn/permissionDenied",
+                                            json!({
+                                                "threadId": thread_id,
+                                                "turnId": current_turn_id,
+                                            "permissionDenials": [json!({
+                                                "toolName": command,
+                                                "toolUseId": tool_use_id,
+                                                "toolInput": tool_input.clone(),
+                                            })],
+                                            }),
+                                        );
+                                    }
+                                }
                                 output = collapse_subagent_output(output, &command, &tool_input, &value);
                                 let item_id_result = if tool_use_id.is_empty() {
                                     tool_counter += 1;
@@ -1411,14 +1539,14 @@ async fn read_persistent_stdout(
                                     "item/completed",
                                     json!({
                                         "threadId": thread_id,
-                                        "item": {
-                                            "id": item_id_result,
-                                            "type": "commandExecution",
-                                            "command": [command],
-                                            "status": "completed",
-                                            "aggregatedOutput": output,
-                                            "toolInput": tool_input,
-                                        }
+                                        "item": build_tool_item(
+                                            &item_id_result,
+                                            &command,
+                                            &tool_input,
+                                            "completed",
+                                            Some(output.as_str()),
+                                            Some(&result_value),
+                                        ),
                                     }),
                                 );
                             }
@@ -1431,57 +1559,59 @@ async fn read_persistent_stdout(
                     if let Some(model_usage) = value.get("modelUsage") {
                         last_model_usage = Some(model_usage.clone());
                     }
-                    if !permission_denials_emitted {
-                        let denials = value
-                            .get("permission_denials")
-                            .or_else(|| value.get("permissionDenials"))
-                            .and_then(|item| item.as_array())
-                            .map(|items| {
-                                items
-                                    .iter()
-                                    .filter_map(|entry| {
-                                        let tool_name = entry
-                                            .get("tool_name")
-                                            .or_else(|| entry.get("toolName"))
-                                            .and_then(|item| item.as_str())?
-                                            .trim()
-                                            .to_string();
-                                        if tool_name.is_empty() {
-                                            return None;
-                                        }
-                                        let tool_use_id = entry
-                                            .get("tool_use_id")
-                                            .or_else(|| entry.get("toolUseId"))
-                                            .and_then(|item| item.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        let tool_input = entry
-                                            .get("tool_input")
-                                            .or_else(|| entry.get("toolInput"))
-                                            .cloned()
-                                            .unwrap_or(Value::Null);
-                                        Some(json!({
-                                            "toolName": tool_name,
-                                            "toolUseId": tool_use_id,
-                                            "toolInput": tool_input,
-                                        }))
-                                    })
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-                        if !denials.is_empty() {
-                            permission_denials_emitted = true;
-                            emit_event(
-                                &event_sink,
-                                &workspace_id,
-                                "turn/permissionDenied",
-                                json!({
-                                    "threadId": thread_id,
-                                    "turnId": current_turn_id,
-                                    "permissionDenials": denials,
-                                }),
-                            );
+                    let mut denials: Vec<Value> = Vec::new();
+                    if let Some(items) = value
+                        .get("permission_denials")
+                        .or_else(|| value.get("permissionDenials"))
+                        .and_then(|item| item.as_array())
+                    {
+                        for (index, entry) in items.iter().enumerate() {
+                            let tool_name = entry
+                                .get("tool_name")
+                                .or_else(|| entry.get("toolName"))
+                                .and_then(|item| item.as_str())
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            if tool_name.is_empty() {
+                                continue;
+                            }
+                            let tool_use_id = entry
+                                .get("tool_use_id")
+                                .or_else(|| entry.get("toolUseId"))
+                                .and_then(|item| item.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let tool_input = entry
+                                .get("tool_input")
+                                .or_else(|| entry.get("toolInput"))
+                                .cloned()
+                                .unwrap_or(Value::Null);
+                            let denial_id = if tool_use_id.is_empty() {
+                                format!("{thread_id}-{tool_name}-{index}")
+                            } else {
+                                tool_use_id.clone()
+                            };
+                            if permission_denial_ids.insert(denial_id) {
+                                denials.push(json!({
+                                    "toolName": tool_name,
+                                    "toolUseId": tool_use_id,
+                                    "toolInput": tool_input,
+                                }));
+                            }
                         }
+                    }
+                    if !denials.is_empty() {
+                        emit_event(
+                            &event_sink,
+                            &workspace_id,
+                            "turn/permissionDenied",
+                            json!({
+                                "threadId": thread_id,
+                                "turnId": current_turn_id,
+                                "permissionDenials": denials,
+                            }),
+                        );
                     }
 
                     // Result event signals end of turn
@@ -1692,6 +1822,7 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                             .unwrap_or_else(|| tool_result_output(fallback));
                     }
                 }
+                let result_value = tool_result_value(&content_value, &value);
                 let command = tool_names
                     .get(tool_use_id)
                     .cloned()
@@ -1712,14 +1843,14 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                     tool_use_id.to_string()
                 };
                 let item_id = id.clone();
-                let item = json!({
-                    "id": id,
-                    "type": "commandExecution",
-                    "command": [command],
-                    "status": "completed",
-                    "aggregatedOutput": output,
-                    "toolInput": tool_input,
-                });
+                let item = build_tool_item(
+                    &id,
+                    &command,
+                    &tool_input,
+                    "completed",
+                    Some(output.as_str()),
+                    Some(&result_value),
+                );
                 if let Some(index) = tool_item_indices.get(&item_id) {
                     items[*index] = item;
                 } else {
@@ -1779,24 +1910,25 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
                         }
                         // Don't skip Task tools - we want to show them
                         // (subagent_tool_ids tracking above is still needed for collapsing output)
-                        let id = if tool_id.is_empty() {
-                            format!("{thread_id}-tool-{}", items.len())
-                        } else {
-                            tool_id.to_string()
-                        };
-                        let item_id = id.clone();
-                        let item = json!({
-                            "id": id,
-                            "type": "commandExecution",
-                            "command": [tool_name],
-                            "status": "running",
-                            "toolInput": tool_input,
-                        });
-                        if let Some(index) = tool_item_indices.get(&item_id) {
-                            items[*index] = item;
-                        } else {
-                            tool_item_indices.insert(item_id, items.len());
-                            items.push(item);
+                    let id = if tool_id.is_empty() {
+                        format!("{thread_id}-tool-{}", items.len())
+                    } else {
+                        tool_id.to_string()
+                    };
+                    let item_id = id.clone();
+                    let item = build_tool_item(
+                        &id,
+                        &tool_name,
+                        &tool_input,
+                        "running",
+                        None,
+                        None,
+                    );
+                    if let Some(index) = tool_item_indices.get(&item_id) {
+                        items[*index] = item;
+                    } else {
+                        tool_item_indices.insert(item_id, items.len());
+                        items.push(item);
                         }
                     }
                     _ => {}
@@ -2196,6 +2328,7 @@ fn process_subagent_line(
                         .unwrap_or_else(|| tool_result_output(fallback));
                 }
             }
+            let result_value = tool_result_value(&content_value, value);
             let command = tool_names
                 .get(tool_use_id)
                 .cloned()
@@ -2217,14 +2350,14 @@ fn process_subagent_line(
                 "item/completed",
                 json!({
                     "threadId": thread_id,
-                    "item": {
-                        "id": item_id,
-                        "type": "commandExecution",
-                        "command": [command],
-                        "status": "completed",
-                        "aggregatedOutput": output,
-                        "toolInput": tool_input,
-                    }
+                    "item": build_tool_item(
+                        &item_id,
+                        &command,
+                        &tool_input,
+                        "completed",
+                        Some(output.as_str()),
+                        Some(&result_value),
+                    ),
                 }),
             );
         }
@@ -2261,13 +2394,14 @@ fn process_subagent_line(
                     "item/started",
                     json!({
                         "threadId": thread_id,
-                        "item": {
-                            "id": item_id,
-                            "type": "commandExecution",
-                            "command": [tool_name],
-                            "status": "running",
-                            "toolInput": tool_input,
-                        }
+                        "item": build_tool_item(
+                            &item_id,
+                            &tool_name,
+                            &tool_input,
+                            "running",
+                            None,
+                            None,
+                        ),
                     }),
                 );
             }
@@ -2515,6 +2649,14 @@ fn value_to_millis(value: &Value) -> Option<i64> {
     }
 }
 
+fn value_to_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::String(value) => value.parse::<u64>().ok(),
+        Value::Number(value) => value.as_u64(),
+        _ => None,
+    }
+}
+
 fn resolve_project_dir(entry: &WorkspaceEntry) -> Option<PathBuf> {
     let projects_root = resolve_default_claude_home()?.join("projects");
     Some(projects_root.join(encode_project_path(&entry.path)))
@@ -2639,6 +2781,217 @@ fn tool_result_output(value: &Value) -> String {
         return String::new();
     }
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn tool_result_value(content_value: &Value, event_value: &Value) -> Value {
+    let is_empty = match content_value {
+        Value::Null => true,
+        Value::String(text) => text.trim().is_empty(),
+        Value::Array(items) => items.is_empty(),
+        _ => false,
+    };
+    if !is_empty {
+        return content_value.clone();
+    }
+    if let Some(fallback) = event_value
+        .get("toolUseResult")
+        .or_else(|| event_value.get("tool_use_result"))
+    {
+        if let Some(content) = fallback.get("content") {
+            return content.clone();
+        }
+        return fallback.clone();
+    }
+    Value::Null
+}
+
+fn parse_mcp_tool_name(tool_name: &str) -> Option<(String, String)> {
+    let trimmed = tool_name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed.to_lowercase().starts_with("mcp__") {
+        return None;
+    }
+    let parts: Vec<&str> = trimmed.split("__").collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let server = parts[1].trim();
+    let tool = parts[2..].join("__");
+    if server.is_empty() || tool.trim().is_empty() {
+        return None;
+    }
+    Some((server.to_string(), tool.trim().to_string()))
+}
+
+fn extract_string_field(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = map.get(*key).and_then(|value| value.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_path_from_value(value: &Value) -> Option<String> {
+    if let Some(path) = value.as_str() {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(map) = value.as_object() {
+        let keys = [
+            "file_path",
+            "filePath",
+            "path",
+            "filename",
+            "file",
+            "notebook_path",
+            "notebookPath",
+        ];
+        return extract_string_field(map, &keys);
+    }
+    None
+}
+
+fn extract_file_paths(tool_input: &Value) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    let Some(map) = tool_input.as_object() else {
+        return paths;
+    };
+    let keys = [
+        "file_path",
+        "filePath",
+        "path",
+        "filename",
+        "file",
+        "notebook_path",
+        "notebookPath",
+    ];
+    if let Some(path) = extract_string_field(map, &keys) {
+        paths.push(path);
+    }
+    for key in ["files", "paths", "targets", "edits", "changes"] {
+        if let Some(Value::Array(items)) = map.get(key) {
+            for item in items {
+                if let Some(path) = extract_path_from_value(item) {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+    let mut deduped: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for path in paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            deduped.push(trimmed.to_string());
+        }
+    }
+    deduped
+}
+
+fn build_tool_item(
+    id: &str,
+    tool_name: &str,
+    tool_input: &Value,
+    status: &str,
+    output: Option<&str>,
+    result_value: Option<&Value>,
+) -> Value {
+    if let Some((server, tool)) = parse_mcp_tool_name(tool_name) {
+        let mut item = json!({
+            "id": id,
+            "type": "mcpToolCall",
+            "server": server,
+            "tool": tool,
+            "arguments": tool_input.clone(),
+            "status": status,
+        });
+        if let Value::Object(ref mut map) = item {
+            if let Some(result) = result_value {
+                if !result.is_null() {
+                    map.insert("result".to_string(), result.clone());
+                } else if let Some(output) = output {
+                    map.insert("result".to_string(), Value::String(output.to_string()));
+                }
+            } else if let Some(output) = output {
+                map.insert("result".to_string(), Value::String(output.to_string()));
+            }
+        }
+        return item;
+    }
+
+    let normalized = tool_name.trim().to_lowercase();
+    if normalized == "websearch" {
+        let query = tool_input
+            .get("query")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let mut item = json!({
+            "id": id,
+            "type": "webSearch",
+            "query": query,
+            "status": status,
+        });
+        if let Value::Object(ref mut map) = item {
+            if let Some(output) = output {
+                map.insert("aggregatedOutput".to_string(), Value::String(output.to_string()));
+            }
+        }
+        return item;
+    }
+
+    if matches!(
+        normalized.as_str(),
+        "write" | "edit" | "multiedit" | "notebookedit"
+    ) {
+        let paths = extract_file_paths(tool_input);
+        let kind = if normalized == "write" { "add" } else { "modify" };
+        let changes = paths
+            .into_iter()
+            .map(|path| json!({ "path": path, "kind": kind }))
+            .collect::<Vec<_>>();
+        let mut item = json!({
+            "id": id,
+            "type": "fileChange",
+            "status": status,
+            "changes": changes,
+        });
+        if let Value::Object(ref mut map) = item {
+            if let Some(output) = output {
+                map.insert("aggregatedOutput".to_string(), Value::String(output.to_string()));
+            }
+            if !tool_input.is_null() {
+                map.insert("toolInput".to_string(), tool_input.clone());
+            }
+        }
+        return item;
+    }
+
+    let mut item = json!({
+        "id": id,
+        "type": "commandExecution",
+        "command": [tool_name],
+        "status": status,
+        "toolInput": tool_input.clone(),
+    });
+    if let Value::Object(ref mut map) = item {
+        if let Some(output) = output {
+            map.insert("aggregatedOutput".to_string(), Value::String(output.to_string()));
+        }
+    }
+    item
 }
 
 fn extract_subagent_id(value: &Value) -> Option<String> {

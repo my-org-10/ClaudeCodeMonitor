@@ -93,13 +93,29 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
         return;
       }
 
-      if (method.includes("requestApproval") && typeof message.id === "number") {
-        const params = (message.params as Record<string, unknown>) ?? {};
-        const toolUseId = String(params.toolUseId ?? params.tool_use_id ?? "");
+      if (method.includes("requestApproval")) {
+        const params = { ...((message.params as Record<string, unknown>) ?? {}) };
+        const rawRequestId = message.id;
+        let requestId =
+          typeof rawRequestId === "number" ? rawRequestId : Number(rawRequestId);
+        if (!Number.isFinite(requestId)) {
+          requestId = Date.now();
+        }
+        if (rawRequestId !== undefined && rawRequestId !== null) {
+          if (params.requestId === undefined) {
+            params.requestId = rawRequestId;
+          }
+          if (params.request_id === undefined) {
+            params.request_id = rawRequestId;
+          }
+        }
+        const toolUseId = String(
+          params.toolUseId ?? params.tool_use_id ?? params.toolUseID ?? "",
+        );
         handlers.onApprovalRequest?.({
           workspace_id,
-          request_id: message.id,
-          tool_use_id: toolUseId,
+          request_id: requestId,
+          tool_use_id: toolUseId || String(rawRequestId ?? requestId),
           method,
           params,
         });

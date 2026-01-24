@@ -122,6 +122,10 @@ type LayoutNodesOptions = {
     denial: PermissionDenial,
     ruleInfo: ApprovalRuleInfo,
   ) => void;
+  handlePermissionRetry: (
+    denial: PermissionDenial,
+    ruleInfo: ApprovalRuleInfo,
+  ) => void;
   handlePermissionDismiss: (denial: PermissionDenial) => void;
   handleUserInputSubmit: (
     request: RequestUserInputRequest,
@@ -552,6 +556,7 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
       onDecision={options.handleApprovalDecision}
       onRemember={options.handleApprovalRemember}
       onPermissionRemember={options.handlePermissionRemember}
+      onPermissionRetry={options.handlePermissionRetry}
       onPermissionDismiss={options.handlePermissionDismiss}
     />
   );

@@ -18,8 +18,6 @@ import type {
 } from "../../../types";
 import {
   type ApprovalRuleInfo,
-  getApprovalCommandInfo,
-  matchesCommandPrefix,
   normalizeCommandTokens,
 } from "../../../utils/approvalRules";
 import {
@@ -56,6 +54,7 @@ const MAX_PINS_SOFT_LIMIT = 5;
 type ThreadActivityMap = Record<string, Record<string, number>>;
 type PinnedThreadsMap = Record<string, number>;
 type CustomNamesMap = Record<string, string>;
+type LastPrompt = { workspace: WorkspaceInfo; text: string; images: string[] };
 
 function loadThreadActivity(): ThreadActivityMap {
   if (typeof window === "undefined") {
@@ -435,6 +434,7 @@ export function useThreads({
   const pendingInterruptsRef = useRef<Set<string>>(new Set());
   const customNamesRef = useRef<CustomNamesMap>({});
   const approvalAllowlistRef = useRef<Record<string, string[][]>>({});
+  const lastPromptByThreadRef = useRef<Record<string, LastPrompt>>({});
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -800,30 +800,35 @@ export function useThreads({
     () => ({
       onWorkspaceConnected: handleWorkspaceConnected,
       onApprovalRequest: (approval: ApprovalRequest) => {
-        const commandInfo = getApprovalCommandInfo(approval.params ?? {});
-        const allowlist =
-          approvalAllowlistRef.current[approval.workspace_id] ?? [];
-        if (
-          commandInfo &&
-          matchesCommandPrefix(commandInfo.tokens, allowlist)
-        ) {
-          const threadId = String(approval.params.threadId ?? approval.params.thread_id ?? "");
-          void respondToServerRequest(
-            approval.workspace_id,
-            threadId,
-            approval.tool_use_id,
-            "accept",
-          );
-          return;
-        }
         dispatch({ type: "addApproval", approval });
       },
       onRequestUserInput: (request: RequestUserInputRequest) => {
         dispatch({ type: "addUserInputRequest", request });
       },
-      onPermissionDenied: ({ denials }: { denials: PermissionDenial[] }) => {
+      onPermissionDenied: ({
+        workspaceId,
+        threadId,
+        denials,
+      }: {
+        workspaceId: string;
+        threadId: string;
+        denials: PermissionDenial[];
+      }) => {
         if (denials.length) {
           dispatch({ type: "addPermissionDenials", denials });
+          // If AskUserQuestion was denied, clear any pending user input requests for this thread.
+          // This happens when using bypassPermissions or dontAsk mode where the CLI
+          // immediately denies the tool without waiting for user input.
+          const hasAskUserQuestionDenial = denials.some(
+            (d) => d.tool_name === "AskUserQuestion",
+          );
+          if (hasAskUserQuestionDenial && threadId && workspaceId) {
+            dispatch({
+              type: "clearUserInputRequestsForThread",
+              threadId,
+              workspaceId,
+            });
+          }
         }
       },
       onAppServerEvent: (event: AppServerEvent) => {
@@ -987,10 +992,20 @@ export function useThreads({
           dispatch({ type: "setActiveTurnId", threadId, turnId });
         }
       },
-      onTurnCompleted: (_workspaceId: string, threadId: string, _turnId: string) => {
+      onTurnCompleted: (workspaceId: string, threadId: string, _turnId: string) => {
         markProcessing(threadId, false);
         dispatch({ type: "setActiveTurnId", threadId, turnId: null });
         pendingInterruptsRef.current.delete(threadId);
+        // Clear any stale user input requests for this thread when the turn ends.
+        // This ensures we don't show orphaned prompts if the CLI completed/failed
+        // before the user could respond (e.g., permission denied, timeout).
+        if (threadId && workspaceId) {
+          dispatch({
+            type: "clearUserInputRequestsForThread",
+            threadId,
+            workspaceId,
+          });
+        }
       },
       onTurnPlanUpdated: (
         workspaceId: string,
@@ -1596,7 +1611,7 @@ export function useThreads({
       threadId: string,
       text: string,
       images: string[] = [],
-      options?: { skipPromptExpansion?: boolean },
+      options?: { skipPromptExpansion?: boolean; skipUserMessage?: boolean },
     ) => {
       const messageText = text.trim();
       if (!messageText && images.length === 0) {
@@ -1612,6 +1627,11 @@ export function useThreads({
         }
         finalText = promptExpansion?.expanded ?? messageText;
       }
+      lastPromptByThreadRef.current[threadId] = {
+        workspace,
+        text: finalText,
+        images,
+      };
       const wasProcessing =
         (state.threadStatusById[threadId]?.isProcessing ?? false) &&
         steerEnabled;
@@ -1647,7 +1667,7 @@ export function useThreads({
       });
       recordThreadActivity(workspace.id, threadId);
       const hasCustomName = Boolean(getCustomName(workspace.id, threadId));
-      if (!didInsertOptimistic) {
+      if (!didInsertOptimistic && !options?.skipUserMessage) {
         dispatch({
           type: "addUserMessage",
           workspaceId: workspace.id,
@@ -1741,6 +1761,63 @@ export function useThreads({
       safeMessageActivity,
       state.threadStatusById,
       steerEnabled,
+    ],
+  );
+
+  const handlePermissionRetry = useCallback(
+    async (denial: PermissionDenial, ruleInfo: ApprovalRuleInfo) => {
+      try {
+        await rememberApprovalRule(denial.workspace_id, ruleInfo.rule);
+      } catch (error) {
+        onDebug?.({
+          id: `${Date.now()}-client-permission-retry-rule-error`,
+          timestamp: Date.now(),
+          source: "error",
+          label: "permission retry rule error",
+          payload: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      if (ruleInfo.commandTokens) {
+        rememberApprovalPrefix(denial.workspace_id, ruleInfo.commandTokens);
+      }
+
+      dispatch({ type: "removePermissionDenial", denialId: denial.id });
+
+      const lastPrompt = lastPromptByThreadRef.current[denial.thread_id];
+      if (!lastPrompt || lastPrompt.workspace.id !== denial.workspace_id) {
+        pushThreadErrorMessage(
+          denial.thread_id,
+          "No recent prompt available to retry.",
+        );
+        return;
+      }
+
+      try {
+        await interruptTurnService(
+          denial.workspace_id,
+          denial.thread_id,
+          denial.turn_id || "pending",
+        );
+        await sendMessageToThread(
+          lastPrompt.workspace,
+          denial.thread_id,
+          lastPrompt.text,
+          lastPrompt.images,
+          { skipPromptExpansion: true, skipUserMessage: true },
+        );
+      } catch (error) {
+        pushThreadErrorMessage(
+          denial.thread_id,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    },
+    [
+      onDebug,
+      pushThreadErrorMessage,
+      rememberApprovalPrefix,
+      sendMessageToThread,
     ],
   );
 
@@ -1932,11 +2009,18 @@ export function useThreads({
   const handleApprovalDecision = useCallback(
     async (request: ApprovalRequest, decision: "accept" | "decline") => {
       const threadId = String(request.params.threadId ?? request.params.thread_id ?? "");
+      const requestIdValue =
+        request.params.requestId ?? request.params.request_id ?? request.request_id;
+      const requestId =
+        typeof requestIdValue === "string" || typeof requestIdValue === "number"
+          ? requestIdValue
+          : request.request_id;
       await respondToServerRequest(
         request.workspace_id,
         threadId,
         request.tool_use_id,
         decision,
+        requestId,
       );
       dispatch({
         type: "removeApproval",
@@ -1966,11 +2050,18 @@ export function useThreads({
       }
 
       const threadId = String(request.params.threadId ?? request.params.thread_id ?? "");
+      const requestIdValue =
+        request.params.requestId ?? request.params.request_id ?? request.request_id;
+      const requestId =
+        typeof requestIdValue === "string" || typeof requestIdValue === "number"
+          ? requestIdValue
+          : request.request_id;
       await respondToServerRequest(
         request.workspace_id,
         threadId,
         request.tool_use_id,
         "accept",
+        requestId,
       );
       dispatch({
         type: "removeApproval",
@@ -2104,6 +2195,7 @@ export function useThreads({
     handleApprovalDecision,
     handleApprovalRemember,
     handlePermissionRemember,
+    handlePermissionRetry,
     handlePermissionDismiss,
     handleUserInputSubmit,
   };

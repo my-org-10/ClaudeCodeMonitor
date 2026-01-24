@@ -183,12 +183,18 @@ export async function respondToServerRequest(
   threadId: string,
   toolUseId: string,
   decision: "accept" | "decline",
+  requestId?: number | string,
 ) {
+  const result: Record<string, unknown> = { decision };
+  if (requestId !== undefined && requestId !== null) {
+    result.requestId = requestId;
+    result.request_id = requestId;
+  }
   return invoke("respond_to_server_request", {
     workspaceId,
     threadId,
     toolUseId,
-    result: { decision },
+    result,
   });
 }
 

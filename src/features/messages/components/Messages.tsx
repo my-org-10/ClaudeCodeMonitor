@@ -381,6 +381,7 @@ function buildToolSummary(
     return {
       label: "searched",
       value: item.detail || "",
+      output: item.output || "",
     };
   }
 
