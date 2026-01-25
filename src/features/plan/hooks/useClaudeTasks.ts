@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import type { ClaudeTask, TurnPlan, TurnPlanStep, TurnPlanStepStatus } from "../../../types";
 import { getClaudeTasks } from "../../../services/tauri";
 
@@ -54,9 +56,8 @@ export function useClaudeTasks({
     try {
       const response = await getClaudeTasks(threadId);
       setTasks(response.tasks);
-    } catch (error) {
+    } catch {
       // Silently fail - tasks may not exist for this session
-      console.debug("Failed to fetch Claude tasks:", error);
     }
   }, []);
 
@@ -78,7 +79,39 @@ export function useClaudeTasks({
     fetchTasks(activeThreadId);
   }, [activeThreadId, fetchTasks]);
 
-  // Poll for task updates while processing
+  // Set up file watcher for real-time updates
+  useEffect(() => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    let unlistenFn: (() => void) | null = null;
+
+    // Start the file watcher
+    invoke("task_watcher_start", { listId: activeThreadId })
+      .then(() => {
+        // Listen for task list changes
+        listen(`task-list-changed:${activeThreadId}`, () => {
+          fetchTasks(activeThreadId);
+        }).then((unlisten) => {
+          unlistenFn = unlisten;
+        });
+      })
+      .catch(() => {
+        // Silently fail - watcher is optional enhancement
+      });
+
+    return () => {
+      if (unlistenFn) {
+        unlistenFn();
+      }
+      invoke("task_watcher_stop", { listId: activeThreadId }).catch(() => {
+        // Ignore errors on cleanup
+      });
+    };
+  }, [activeThreadId, fetchTasks]);
+
+  // Poll for task updates as fallback (less frequent with file watcher)
   useEffect(() => {
     if (!activeThreadId) {
       return;

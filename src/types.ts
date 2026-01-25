@@ -335,14 +335,18 @@ export type TurnPlan = {
   steps: TurnPlanStep[];
 };
 
+export type ClaudeTaskStatus = 'pending' | 'in_progress' | 'completed';
+
 export type ClaudeTask = {
   id: string;
   subject: string;
   description: string;
-  activeForm: string | null;
-  status: string;
+  activeForm?: string;
+  status: ClaudeTaskStatus;
+  owner?: string;
   blocks: string[];
   blockedBy: string[];
+  metadata?: Record<string, unknown>;
 };
 
 export type ClaudeTasksResponse = {

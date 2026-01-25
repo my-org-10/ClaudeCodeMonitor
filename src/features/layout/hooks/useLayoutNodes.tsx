@@ -22,6 +22,7 @@ import type { ApprovalRuleInfo } from "../../../utils/approvalRules";
 import type {
   AccessMode,
   BranchInfo,
+  ClaudeTask,
   CollaborationModeOption,
   ConversationItem,
   ComposerEditorSettings,
@@ -353,6 +354,7 @@ type LayoutNodesOptions = {
   showComposer: boolean;
   composerSendLabel?: string;
   plan: TurnPlan | null;
+  claudeTasks?: ClaudeTask[];
   debugEntries: DebugEntry[];
   debugOpen: boolean;
   terminalOpen: boolean;
@@ -789,7 +791,13 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
     />
   );
 
-  const planPanelNode = <PlanPanel plan={options.plan} isProcessing={options.isProcessing} />;
+  const planPanelNode = (
+    <PlanPanel
+      plan={options.plan}
+      tasks={options.claudeTasks}
+      isProcessing={options.isProcessing}
+    />
+  );
 
   const terminalPanelNode = options.terminalState ? (
     <TerminalPanel

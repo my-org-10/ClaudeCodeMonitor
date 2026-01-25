@@ -872,7 +872,7 @@ function MainApp() {
   const isReviewing = activeThreadId
     ? threadStatusById[activeThreadId]?.isReviewing ?? false
     : false;
-  const { plan: claudeTasksPlan } = useClaudeTasks({
+  const { plan: claudeTasksPlan, tasks: claudeTasks } = useClaudeTasks({
     activeThreadId,
     isProcessing,
   });
@@ -1659,6 +1659,7 @@ function MainApp() {
     composerSendLabel,
     showComposer,
     plan: activePlan,
+    claudeTasks,
     debugEntries,
     debugOpen,
     terminalOpen,
