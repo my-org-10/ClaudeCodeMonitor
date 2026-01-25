@@ -895,6 +895,32 @@
   line-height: 1.35;
 }
 
+.message .markdown-linkblock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  word-break: break-all;
+}
+
+.message .markdown-linkblock a {
+  color: var(--text-accent);
+  text-decoration: underline;
+}
+
+.message .markdown-linkblock a:hover {
+  color: var(--text-strong);
+}
+
+.message .markdown-codeblock-single {
+  margin: 0;
+  padding: 4px 8px;
+  background: var(--surface-command);
+  border: 1px solid var(--border-stronger);
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .markdown ul,
 .markdown ol {
   padding-left: 14px;

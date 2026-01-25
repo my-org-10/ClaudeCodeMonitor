@@ -1386,6 +1386,9 @@ function MainApp() {
       clearDraftForThread(threadId);
       removeImagesForThread(threadId);
     },
+    onSyncThread: (workspaceId, threadId) => {
+      void refreshThread(workspaceId, threadId);
+    },
     pinThread,
     unpinThread,
     isThreadPinned,
