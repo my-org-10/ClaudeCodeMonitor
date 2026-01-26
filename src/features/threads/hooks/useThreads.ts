@@ -1193,6 +1193,12 @@ export function useThreads({
         const maxPagesWithoutMatch = hasKnownActivity ? Number.POSITIVE_INFINITY : 5;
         let pagesFetched = 0;
         let cursor: string | null = null;
+        let totalFetched = 0;
+        let totalFilteredOut = 0;
+        let matchingRootCount = 0;
+        console.debug(
+          `[debug:sessions] listThreadsForWorkspace: starting for workspace '${workspace.id}', hasKnownActivity=${hasKnownActivity}, maxPagesWithoutMatch=${maxPagesWithoutMatch}`,
+        );
         do {
           pagesFetched += 1;
           const response =
@@ -1214,16 +1220,43 @@ export function useThreads({
             : [];
           const nextCursor =
             (result?.nextCursor ?? result?.next_cursor ?? null) as string | null;
+          totalFetched += data.length;
+          const beforeCount = matchingThreads.length;
+          const beforeRootCount = matchingRootCount;
           matchingThreads.push(
-            ...data.filter((thread) =>
-              isThreadInWorkspace(asString(thread?.cwd), workspacePath),
-            ),
+            ...data.filter((thread) => {
+              const threadCwd = asString(thread?.cwd);
+              const matches = isThreadInWorkspace(threadCwd, workspacePath);
+              if (!matches) {
+                console.debug(
+                  `[debug:sessions] Thread '${String(thread?.id ?? "").slice(0, 12)}...' filtered out: cwd='${threadCwd}' does not match workspace='${workspacePath}'`,
+                );
+                totalFilteredOut++;
+                return false;
+              }
+              const parentId = asString(thread?.parentId ?? thread?.parent_id ?? "");
+              if (!parentId) {
+                matchingRootCount++;
+              }
+              return true;
+            }),
+          );
+          const addedThisPage = matchingThreads.length - beforeCount;
+          const rootsAddedThisPage = matchingRootCount - beforeRootCount;
+          console.debug(
+            `[debug:sessions] Page ${pagesFetched}: fetched ${data.length} threads, ${addedThisPage} matched workspace (${rootsAddedThisPage} roots), ${data.length - addedThisPage} filtered out, total matching: ${matchingThreads.length} (${matchingRootCount} roots)`,
           );
           cursor = nextCursor;
-          if (matchingThreads.length === 0 && pagesFetched >= maxPagesWithoutMatch) {
+          if (matchingRootCount === 0 && pagesFetched >= maxPagesWithoutMatch) {
+            console.warn(
+              `[debug:sessions] Early termination: no matching root threads found after ${pagesFetched} pages (${totalFetched} threads checked). hasKnownActivity=${hasKnownActivity}`,
+            );
             break;
           }
-        } while (cursor && matchingThreads.length < targetCount);
+        } while (cursor && matchingRootCount < targetCount);
+        console.debug(
+          `[debug:sessions] Pagination complete: ${pagesFetched} pages fetched, ${totalFetched} total threads scanned, ${matchingThreads.length} matched (${matchingRootCount} roots), ${totalFilteredOut} filtered by workspace path, cursor=${cursor ? "has more" : "end of data"}`,
+        );
 
         const uniqueById = new Map<string, Record<string, unknown>>();
         matchingThreads.forEach((thread) => {
@@ -1233,6 +1266,12 @@ export function useThreads({
           }
         });
         const uniqueThreads = Array.from(uniqueById.values());
+        const dupesRemoved = matchingThreads.length - uniqueThreads.length;
+        if (dupesRemoved > 0) {
+          console.debug(
+            `[debug:sessions] Deduplication removed ${dupesRemoved} duplicate threads, ${uniqueThreads.length} unique remain`,
+          );
+        }
         const activityByThread = threadActivityRef.current[workspace.id] ?? {};
         const nextActivityByThread = { ...activityByThread };
         let didChangeActivity = false;
@@ -1265,8 +1304,32 @@ export function useThreads({
           return bActivity - aActivity;
         });
         applyParentLinksFromThreads(uniqueThreads);
-        const summaries = uniqueThreads
-          .slice(0, targetCount)
+        // Truncate by root sessions only — subagent threads come along
+        // for free with their parent. This prevents subagents from newer
+        // sessions pushing older parent sessions out of the display.
+        const rootThreads: Record<string, unknown>[] = [];
+        const childThreads: Record<string, unknown>[] = [];
+        for (const thread of uniqueThreads) {
+          const parentId = asString(thread?.parentId ?? thread?.parent_id ?? "");
+          if (parentId) {
+            childThreads.push(thread);
+          } else {
+            rootThreads.push(thread);
+          }
+        }
+        const keptRoots = rootThreads.slice(0, targetCount);
+        const keptRootIds = new Set(keptRoots.map((t) => String(t?.id ?? "")));
+        const keptChildren = childThreads.filter((t) => {
+          const parentId = asString(t?.parentId ?? t?.parent_id ?? "");
+          return keptRootIds.has(parentId);
+        });
+        const displayThreads = [...keptRoots, ...keptChildren];
+        if (rootThreads.length > targetCount) {
+          console.warn(
+            `[debug:sessions] Truncating ${rootThreads.length} root threads to display limit of ${targetCount}. Including ${keptChildren.length} child threads from kept roots. ${rootThreads.length - targetCount} older root sessions will not be shown without loading more.`,
+          );
+        }
+        const summaries = displayThreads
           .map((thread, index) => {
             const id = String(thread?.id ?? "");
             const preview = asString(thread?.preview ?? "").trim();
@@ -1310,6 +1373,10 @@ export function useThreads({
           });
         });
       } catch (error) {
+        console.error(
+          `[debug:sessions] listThreadsForWorkspace failed for workspace '${workspace.id}':`,
+          error,
+        );
         onDebug?.({
           id: `${Date.now()}-client-thread-list-error`,
           timestamp: Date.now(),
@@ -1355,6 +1422,12 @@ export function useThreads({
         const maxPagesWithoutMatch = 10;
         let pagesFetched = 0;
         let cursor: string | null = nextCursor;
+        let totalFetched = 0;
+        let totalFilteredOut = 0;
+        let matchingRootCount = 0;
+        console.debug(
+          `[debug:sessions] loadOlderThreads: starting from cursor='${nextCursor}' for workspace '${workspace.id}', existing=${existing.length} threads`,
+        );
         do {
           pagesFetched += 1;
           const response =
@@ -1376,16 +1449,39 @@ export function useThreads({
             : [];
           const next =
             (result?.nextCursor ?? result?.next_cursor ?? null) as string | null;
+          totalFetched += data.length;
+          const beforeCount = matchingThreads.length;
+          const beforeRootCount = matchingRootCount;
           matchingThreads.push(
-            ...data.filter((thread) =>
-              isThreadInWorkspace(asString(thread?.cwd), workspacePath),
-            ),
+            ...data.filter((thread) => {
+              const threadCwd = asString(thread?.cwd);
+              const matches = isThreadInWorkspace(threadCwd, workspacePath);
+              if (!matches) {
+                totalFilteredOut++;
+                return false;
+              }
+              const parentId = asString(thread?.parentId ?? thread?.parent_id ?? "");
+              if (!parentId) {
+                matchingRootCount++;
+              }
+              return true;
+            }),
+          );
+          const rootsAddedThisPage = matchingRootCount - beforeRootCount;
+          console.debug(
+            `[debug:sessions] loadOlderThreads page ${pagesFetched}: fetched ${data.length}, ${matchingThreads.length - beforeCount} matched (${rootsAddedThisPage} roots), total matching: ${matchingThreads.length} (${matchingRootCount} roots)`,
           );
           cursor = next;
-          if (matchingThreads.length === 0 && pagesFetched >= maxPagesWithoutMatch) {
+          if (matchingRootCount === 0 && pagesFetched >= maxPagesWithoutMatch) {
+            console.warn(
+              `[debug:sessions] loadOlderThreads: early termination after ${pagesFetched} pages with no root matches (${totalFetched} threads checked, ${totalFilteredOut} filtered by workspace)`,
+            );
             break;
           }
-        } while (cursor && matchingThreads.length < targetCount);
+        } while (cursor && matchingRootCount < targetCount);
+        console.debug(
+          `[debug:sessions] loadOlderThreads complete: ${pagesFetched} pages, ${totalFetched} scanned, ${matchingThreads.length} matched (${matchingRootCount} roots), ${totalFilteredOut} filtered, cursor=${cursor ? "has more" : "end"}`,
+        );
 
         applyParentLinksFromThreads(matchingThreads);
         const existingIds = new Set(existing.map((thread) => thread.id));
@@ -1435,6 +1531,10 @@ export function useThreads({
           });
         });
       } catch (error) {
+        console.error(
+          `[debug:sessions] loadOlderThreads failed for workspace '${workspace.id}':`,
+          error,
+        );
         onDebug?.({
           id: `${Date.now()}-client-thread-list-older-error`,
           timestamp: Date.now(),

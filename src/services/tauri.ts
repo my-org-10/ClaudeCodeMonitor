@@ -554,6 +554,10 @@ export async function listThreads(
   return invoke<any>("list_threads", { workspaceId, cursor, limit });
 }
 
+export async function searchThread(workspaceId: string, query: string) {
+  return invoke<any>("search_thread", { workspaceId, query });
+}
+
 export async function resumeThread(workspaceId: string, threadId: string) {
   return invoke<any>("resume_thread", { workspaceId, threadId });
 }

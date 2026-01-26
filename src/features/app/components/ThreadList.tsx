@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, MouseEvent } from "react";
 
 import type { ThreadSummary } from "../../../types";
@@ -59,10 +59,11 @@ export function ThreadList({
   onSelectThread,
   onShowThreadMenu,
 }: ThreadListProps) {
-  const [collapsedThreadIds, setCollapsedThreadIds] = useState<Set<string>>(
+  // Track which parent threads the user has manually expanded.
+  // Default is collapsed — child threads are never auto-opened.
+  const [expandedThreadIds, setExpandedThreadIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const knownParentIdsRef = useRef<Set<string>>(new Set());
   const parentIds = useMemo(() => {
     const ids = new Set<string>();
     const collectParents = (rows: ThreadRow[]) => {
@@ -77,33 +78,23 @@ export function ThreadList({
     return ids;
   }, [pinnedRows, unpinnedRows]);
 
+  // Clean up expanded IDs that are no longer parents
   useEffect(() => {
-    setCollapsedThreadIds((prev) => {
+    setExpandedThreadIds((prev) => {
       let changed = false;
       const next = new Set(prev);
-      const knownParentIds = knownParentIdsRef.current;
-
       prev.forEach((id) => {
         if (!parentIds.has(id)) {
           next.delete(id);
           changed = true;
         }
       });
-
-      parentIds.forEach((id) => {
-        if (!knownParentIds.has(id)) {
-          next.add(id);
-          changed = true;
-        }
-      });
-
-      knownParentIdsRef.current = new Set(parentIds);
       return changed ? next : prev;
     });
   }, [parentIds]);
 
   const toggleThreadCollapse = useCallback((threadId: string) => {
-    setCollapsedThreadIds((prev) => {
+    setExpandedThreadIds((prev) => {
       const next = new Set(prev);
       if (next.has(threadId)) {
         next.delete(threadId);
@@ -131,7 +122,7 @@ export function ThreadList({
         hiddenDepth = null;
       }
       const hasChildren = rows[index + 1]?.depth > row.depth;
-      const isCollapsed = hasChildren && collapsedThreadIds.has(row.thread.id);
+      const isCollapsed = hasChildren && !expandedThreadIds.has(row.thread.id);
       if (isCollapsed) {
         hiddenDepth = row.depth;
       }
@@ -139,7 +130,7 @@ export function ThreadList({
     });
 
     return visibleRows;
-  }, [collapsedThreadIds]);
+  }, [expandedThreadIds]);
 
   const visiblePinnedRows = useMemo(
     () => buildVisibleRows(pinnedRows),

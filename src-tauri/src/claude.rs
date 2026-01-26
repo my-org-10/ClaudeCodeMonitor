@@ -342,6 +342,11 @@ pub(crate) async fn list_threads(
 
     let workspace_path = workspace_entry.path.clone();
     let entries = load_sessions_index(&workspace_entry);
+    eprintln!(
+        "[debug:sessions] list_threads: loaded {} total entries for workspace '{}'",
+        entries.len(),
+        workspace_id
+    );
     let archived_ids = archived_threads_path(&state)
         .ok()
         .and_then(|path| read_archived_threads(&path).ok())
@@ -350,10 +355,25 @@ pub(crate) async fn list_threads(
     let archived_set = archived_ids
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
+    if !archived_set.is_empty() {
+        eprintln!(
+            "[debug:sessions] list_threads: filtering out {} archived threads",
+            archived_set.len()
+        );
+    }
+    let total_before_filter = entries.len();
     let mut sorted = entries
         .into_iter()
         .filter(|entry| !archived_set.contains(&entry.session_id))
         .collect::<Vec<_>>();
+    let filtered_count = total_before_filter - sorted.len();
+    if filtered_count > 0 {
+        eprintln!(
+            "[debug:sessions] list_threads: {} sessions removed by archive filter, {} remaining",
+            filtered_count,
+            sorted.len()
+        );
+    }
     sorted.sort_by(|a, b| session_sort_key(b).cmp(&session_sort_key(a)));
 
     let offset = cursor
@@ -362,6 +382,13 @@ pub(crate) async fn list_threads(
         .unwrap_or(0);
     let limit = limit.unwrap_or(20).clamp(1, 50) as usize;
     let end = (offset + limit).min(sorted.len());
+    eprintln!(
+        "[debug:sessions] list_threads: returning page offset={}, limit={}, total={}, has_more={}",
+        offset,
+        limit,
+        sorted.len(),
+        end < sorted.len()
+    );
     let next_cursor = if end < sorted.len() {
         Some(end.to_string())
     } else {
@@ -397,6 +424,76 @@ pub(crate) async fn list_threads(
     Ok(json!({
         "data": threads,
         "nextCursor": next_cursor,
+    }))
+}
+
+#[tauri::command]
+pub(crate) async fn search_thread(
+    workspace_id: String,
+    query: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        return remote_backend::call_remote(
+            &*state,
+            app,
+            "search_thread",
+            json!({ "workspaceId": workspace_id, "query": query }),
+        )
+        .await;
+    }
+
+    let workspace_entry = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .get(&workspace_id)
+            .ok_or("workspace not connected")?
+            .entry
+            .clone()
+    };
+
+    let workspace_path = workspace_entry.path.clone();
+    let entries = load_sessions_index(&workspace_entry);
+    let query_lower = query.to_lowercase();
+
+    let matching: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| entry.session_id.to_lowercase().contains(&query_lower))
+        .collect();
+
+    eprintln!(
+        "[debug:sessions] search_thread: query='{}' matched {} sessions",
+        query,
+        matching.len()
+    );
+
+    let mut threads = Vec::new();
+    for entry in matching {
+        let session_id = entry.session_id.clone();
+        let created_at = parse_iso_timestamp(entry.created.as_deref())
+            .or_else(|| entry.file_mtime)
+            .unwrap_or(0);
+        let updated_at = parse_iso_timestamp(entry.modified.as_deref())
+            .or_else(|| entry.file_mtime)
+            .unwrap_or(created_at);
+        let cwd = entry
+            .project_path
+            .clone()
+            .unwrap_or_else(|| workspace_path.clone());
+        threads.push(json!({
+            "id": session_id,
+            "preview": entry.first_prompt.unwrap_or_default(),
+            "messageCount": entry.message_count.unwrap_or(0),
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+            "cwd": cwd,
+            "gitBranch": entry.git_branch,
+        }));
+    }
+
+    Ok(json!({
+        "data": threads,
     }))
 }
 
@@ -2054,17 +2151,60 @@ fn build_thread_from_session(entry: &WorkspaceEntry, thread_id: &str) -> Result<
 }
 
 fn load_sessions_index(entry: &WorkspaceEntry) -> Vec<ClaudeSessionEntry> {
-    let mut entries = resolve_sessions_index_path(entry)
-        .and_then(|index_path| fs::read_to_string(index_path).ok())
-        .and_then(|data| serde_json::from_str::<Value>(&data).ok())
-        .map(|value| parse_sessions_value(&value))
-        .unwrap_or_default();
+    let index_path = resolve_sessions_index_path(entry);
+    let mut entries = match &index_path {
+        Some(path) => {
+            eprintln!("[debug:sessions] Loading sessions index from {:?}", path);
+            match fs::read_to_string(path) {
+                Ok(data) => match serde_json::from_str::<Value>(&data) {
+                    Ok(value) => {
+                        let parsed = parse_sessions_value(&value);
+                        eprintln!(
+                            "[debug:sessions] Parsed {} entries from sessions index",
+                            parsed.len()
+                        );
+                        parsed
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "[debug:sessions] Failed to parse sessions index JSON at {:?}: {}",
+                            path, err
+                        );
+                        Vec::new()
+                    }
+                },
+                Err(err) => {
+                    eprintln!(
+                        "[debug:sessions] Failed to read sessions index at {:?}: {}",
+                        path, err
+                    );
+                    Vec::new()
+                }
+            }
+        }
+        None => {
+            eprintln!(
+                "[debug:sessions] No sessions index found for workspace {:?}, falling back to filesystem scan",
+                entry.path
+            );
+            Vec::new()
+        }
+    };
 
     let scanned = scan_project_sessions(entry);
     if entries.is_empty() {
+        eprintln!(
+            "[debug:sessions] Index was empty, using {} scanned entries only",
+            scanned.len()
+        );
         return scanned;
     }
 
+    eprintln!(
+        "[debug:sessions] Merging {} index entries with {} scanned entries",
+        entries.len(),
+        scanned.len()
+    );
     let mut merged: HashMap<String, ClaudeSessionEntry> = HashMap::new();
     for entry in entries.drain(..) {
         merged.insert(entry.session_id.clone(), entry);
@@ -2101,6 +2241,10 @@ fn load_sessions_index(entry: &WorkspaceEntry) -> Vec<ClaudeSessionEntry> {
         }
     }
 
+    eprintln!(
+        "[debug:sessions] Merge complete: {} total sessions after merging index + scan",
+        merged.len()
+    );
     merged.into_values().collect()
 }
 
@@ -2117,20 +2261,56 @@ fn parse_sessions_value(value: &Value) -> Vec<ClaudeSessionEntry> {
 }
 
 fn parse_sessions_entries(entries: &[Value]) -> Vec<ClaudeSessionEntry> {
-    entries
-        .iter()
-        .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
-        .collect()
+    let mut parsed = Vec::new();
+    let mut skipped = 0;
+    for entry in entries {
+        match serde_json::from_value::<ClaudeSessionEntry>(entry.clone()) {
+            Ok(session_entry) => parsed.push(session_entry),
+            Err(err) => {
+                skipped += 1;
+                let session_id = entry
+                    .get("sessionId")
+                    .or_else(|| entry.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<unknown>");
+                eprintln!(
+                    "[debug:sessions] Failed to deserialize session entry '{}': {} | raw keys: {:?}",
+                    session_id,
+                    err,
+                    entry.as_object().map(|o| o.keys().collect::<Vec<_>>())
+                );
+            }
+        }
+    }
+    if skipped > 0 {
+        eprintln!(
+            "[debug:sessions] Skipped {} of {} entries due to deserialization failures",
+            skipped,
+            entries.len()
+        );
+    }
+    parsed
 }
 
 fn scan_project_sessions(entry: &WorkspaceEntry) -> Vec<ClaudeSessionEntry> {
     let Some(project_dir) = resolve_project_dir(entry) else {
+        eprintln!(
+            "[debug:sessions] Could not resolve project dir for workspace {:?}",
+            entry.path
+        );
         return Vec::new();
     };
+    eprintln!("[debug:sessions] Scanning project sessions in {:?}", project_dir);
     let mut entries = Vec::new();
-    let dir_entries = match fs::read_dir(project_dir) {
+    let dir_entries = match fs::read_dir(&project_dir) {
         Ok(dir_entries) => dir_entries,
-        Err(_) => return Vec::new(),
+        Err(err) => {
+            eprintln!(
+                "[debug:sessions] Failed to read project directory {:?}: {}",
+                project_dir, err
+            );
+            return Vec::new();
+        }
     };
     for dir_entry in dir_entries.flatten() {
         let path = dir_entry.path();
@@ -2160,6 +2340,11 @@ fn scan_project_sessions(entry: &WorkspaceEntry) -> Vec<ClaudeSessionEntry> {
             is_sidechain: Some(false),
         });
     }
+    eprintln!(
+        "[debug:sessions] Filesystem scan found {} .jsonl session files in {:?}",
+        entries.len(),
+        project_dir
+    );
     entries
 }
 
@@ -2196,23 +2381,51 @@ fn list_session_files(entry: &WorkspaceEntry) -> Vec<(String, PathBuf, i64)> {
 fn scan_session_metadata(path: &Path) -> (Option<String>, Option<i64>, Option<String>) {
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(_) => return (None, None, None),
+        Err(err) => {
+            eprintln!(
+                "[debug:sessions] Failed to open session file {:?}: {}",
+                path, err
+            );
+            return (None, None, None);
+        }
     };
     let reader = BufReader::new(file);
     let mut first_prompt: Option<String> = None;
     let mut message_count: i64 = 0;
     let mut git_branch: Option<String> = None;
+    let mut line_errors: u32 = 0;
+    let mut json_errors: u32 = 0;
+    let mut total_lines: u32 = 0;
     for line in reader.lines() {
+        total_lines += 1;
         let line = match line {
             Ok(line) => line,
-            Err(_) => continue,
+            Err(err) => {
+                line_errors += 1;
+                if line_errors == 1 {
+                    eprintln!(
+                        "[debug:sessions] Read error in session file {:?} at line {}: {}",
+                        path, total_lines, err
+                    );
+                }
+                continue;
+            }
         };
         if line.trim().is_empty() {
             continue;
         }
         let value: Value = match serde_json::from_str(&line) {
             Ok(value) => value,
-            Err(_) => continue,
+            Err(err) => {
+                json_errors += 1;
+                if json_errors == 1 {
+                    eprintln!(
+                        "[debug:sessions] JSON parse error in session file {:?} at line {}: {}",
+                        path, total_lines, err
+                    );
+                }
+                continue;
+            }
         };
         let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if event_type == "user" || event_type == "assistant" {
@@ -2232,6 +2445,13 @@ fn scan_session_metadata(path: &Path) -> (Option<String>, Option<i64>, Option<St
                 }
             }
         }
+    }
+
+    if line_errors > 0 || json_errors > 0 {
+        eprintln!(
+            "[debug:sessions] Session file {:?}: {} total lines, {} read errors, {} JSON parse errors",
+            path, total_lines, line_errors, json_errors
+        );
     }
 
     (

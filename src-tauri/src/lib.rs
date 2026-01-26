@@ -94,6 +94,7 @@ pub fn run() {
             claude::fork_thread_from_message,
             claude::rewind_thread_files,
             claude::list_threads,
+            claude::search_thread,
             claude::archive_thread,
             claude::collaboration_mode_list,
             workspaces::connect_workspace,

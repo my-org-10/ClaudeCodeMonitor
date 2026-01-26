@@ -2,7 +2,8 @@ import type { RateLimitSnapshot, ThreadSummary, WorkspaceInfo } from "../../../t
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, Search, X } from "lucide-react";
+import { searchThread as searchThreadService } from "../../../services/tauri";
 import { SidebarCornerActions } from "./SidebarCornerActions";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
@@ -133,6 +134,82 @@ export function Sidebar({
     width: number;
   } | null>(null);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<
+    Array<{ workspaceId: string; thread: ThreadSummary }> | null
+  >(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+    }
+    let cancelled = false;
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      setSearchResults(null);
+      setIsSearching(false);
+      return;
+    }
+    setIsSearching(true);
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const results: Array<{ workspaceId: string; thread: ThreadSummary }> = [];
+        for (const workspace of workspaces) {
+          if (cancelled) return;
+          try {
+            const response = (await searchThreadService(
+              workspace.id,
+              trimmed,
+            )) as Record<string, unknown>;
+            if (cancelled) return;
+            const result = (response.result ?? response) as Record<string, unknown>;
+            const data = Array.isArray(result?.data)
+              ? (result.data as Record<string, unknown>[])
+              : [];
+            for (const thread of data) {
+              const id = String(thread?.id ?? "");
+              const preview = String(thread?.preview ?? "").trim();
+              const updatedAt = Number(thread?.updatedAt ?? thread?.createdAt ?? 0);
+              if (id) {
+                results.push({
+                  workspaceId: workspace.id,
+                  thread: {
+                    id,
+                    name: preview.length > 38 ? `${preview.slice(0, 38)}…` : preview || id.slice(0, 12),
+                    updatedAt,
+                  },
+                });
+              }
+            }
+          } catch {
+            // workspace may not be connected, skip
+          }
+        }
+        if (!cancelled) {
+          setSearchResults(results);
+        }
+      } catch (error) {
+        console.error("[debug:sessions] search failed:", error);
+        if (!cancelled) {
+          setSearchResults([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSearching(false);
+        }
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      if (searchTimerRef.current) {
+        clearTimeout(searchTimerRef.current);
+      }
+    };
+  }, [searchQuery, workspaces]);
   const { collapsedGroups, toggleGroupCollapse } = useCollapsedGroups(
     COLLAPSED_GROUPS_STORAGE_KEY,
   );
@@ -292,6 +369,35 @@ export function Sidebar({
       onDrop={onWorkspaceDrop}
     >
       <SidebarHeader onSelectHome={onSelectHome} onAddWorkspace={onAddWorkspace} />
+      <div className="sidebar-search" data-tauri-drag-region="false">
+        <Search className="sidebar-search-icon" aria-hidden />
+        <input
+          ref={searchInputRef}
+          type="text"
+          className="sidebar-search-input"
+          placeholder="Search by session ID..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setSearchQuery("");
+              searchInputRef.current?.blur();
+            }
+          }}
+        />
+        {searchQuery && (
+          <button
+            className="sidebar-search-clear"
+            onClick={() => {
+              setSearchQuery("");
+              searchInputRef.current?.focus();
+            }}
+            aria-label="Clear search"
+          >
+            <X className="sidebar-search-clear-icon" aria-hidden />
+          </button>
+        )}
+      </div>
       <div
         className={`workspace-drop-overlay${
           isWorkspaceDropActive ? " is-active" : ""
@@ -316,6 +422,54 @@ export function Sidebar({
         onScroll={updateScrollFade}
         ref={sidebarBodyRef}
       >
+        {searchResults !== null ? (
+          <div className="sidebar-search-results">
+            {isSearching && (
+              <div className="sidebar-search-status">Searching...</div>
+            )}
+            {!isSearching && searchResults.length === 0 && (
+              <div className="sidebar-search-status">No sessions found</div>
+            )}
+            {searchResults.map(({ workspaceId, thread }) => {
+              const workspace = workspaces.find((w) => w.id === workspaceId);
+              return (
+                <div
+                  key={`${workspaceId}:${thread.id}`}
+                  className={`thread-row ${
+                    workspaceId === activeWorkspaceId && thread.id === activeThreadId
+                      ? "active"
+                      : ""
+                  }`}
+                  onClick={() => onSelectThread(workspaceId, thread.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onSelectThread(workspaceId, thread.id);
+                    }
+                  }}
+                >
+                  <span className="thread-status ready" aria-hidden />
+                  <span className="thread-name">
+                    <span className="sidebar-search-result-id">
+                      {thread.id.slice(0, 8)}
+                    </span>
+                    {" "}
+                    {thread.name}
+                  </span>
+                  {workspace && (
+                    <div className="thread-meta">
+                      <span className="thread-time">
+                        {workspace.name}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
         <div className="workspace-list">
           {pinnedThreadRows.length > 0 && (
             <div className="pinned-section">
@@ -491,6 +645,7 @@ export function Sidebar({
             <div className="empty">Add a workspace to start.</div>
           )}
         </div>
+        )}
       </div>
       <SidebarFooter
         sessionPercent={sessionPercent}
