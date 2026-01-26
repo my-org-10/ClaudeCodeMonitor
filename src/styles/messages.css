@@ -198,7 +198,28 @@
   transition: opacity 160ms ease, transform 160ms ease;
 }
 
+.message-menu-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  right: 6px;
+  top: -12px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--surface-card-strong);
+  border: 1px solid var(--border-strong);
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
 .message:hover .message-copy-button {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.message:hover .message-menu-button {
   opacity: 1;
   transform: translateY(0);
 }

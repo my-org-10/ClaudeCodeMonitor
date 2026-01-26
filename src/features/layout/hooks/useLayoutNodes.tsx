@@ -122,6 +122,21 @@ type LayoutNodesOptions = {
     request: RequestUserInputRequest,
     response: RequestUserInputResponse,
   ) => void;
+  onForkThreadFromMessage: (
+    workspaceId: string,
+    threadId: string,
+    messageId: string,
+  ) => void;
+  onRewindThreadToMessage: (
+    workspaceId: string,
+    threadId: string,
+    messageId: string,
+  ) => void;
+  onForkAndRewindThread: (
+    workspaceId: string,
+    threadId: string,
+    messageId: string,
+  ) => void;
   onOpenSettings: () => void;
   onOpenDictationSettings?: () => void;
   onOpenDebug: () => void;
@@ -468,6 +483,9 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
       codeBlockCopyUseModifier={options.codeBlockCopyUseModifier}
       userInputRequests={options.userInputRequests}
       onUserInputSubmit={options.handleUserInputSubmit}
+      onForkThreadFromMessage={options.onForkThreadFromMessage}
+      onRewindThreadToMessage={options.onRewindThreadToMessage}
+      onForkAndRewindThread={options.onForkAndRewindThread}
       isThinking={
         options.activeThreadId
           ? options.threadStatusById[options.activeThreadId]?.isProcessing ?? false

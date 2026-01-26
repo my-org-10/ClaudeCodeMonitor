@@ -25,6 +25,8 @@ import {
   startThread as startThreadService,
   listThreads as listThreadsService,
   resumeThread as resumeThreadService,
+  forkThreadFromMessage as forkThreadFromMessageService,
+  rewindThreadFiles as rewindThreadFilesService,
   archiveThread as archiveThreadService,
   interruptTurn as interruptTurnService,
 } from "../../../services/tauri";
@@ -1922,6 +1924,134 @@ export function useThreads({
     [activeWorkspaceId, resumeThreadForWorkspace],
   );
 
+  const forkThreadFromMessage = useCallback(
+    async (workspaceId: string, threadId: string, messageId: string) => {
+      if (!workspaceId || !threadId || !messageId) {
+        return null;
+      }
+      onDebug?.({
+        id: `${Date.now()}-client-thread-fork`,
+        timestamp: Date.now(),
+        source: "client",
+        label: "thread/fork",
+        payload: { workspaceId, threadId, messageId },
+      });
+      try {
+        const response =
+          (await forkThreadFromMessageService(
+            workspaceId,
+            threadId,
+            messageId,
+          )) as Record<string, unknown>;
+        onDebug?.({
+          id: `${Date.now()}-server-thread-fork`,
+          timestamp: Date.now(),
+          source: "server",
+          label: "thread/fork response",
+          payload: response,
+        });
+        const rpcError = extractRpcErrorMessage(response);
+        if (rpcError) {
+          pushThreadErrorMessage(threadId, `Fork failed: ${rpcError}`);
+          safeMessageActivity();
+          return null;
+        }
+        const result = (response?.result ?? response) as Record<string, unknown>;
+        const newThreadId = asString(
+          result?.threadId ?? result?.thread_id ?? "",
+        );
+        if (!newThreadId) {
+          pushThreadErrorMessage(threadId, "Fork failed.");
+          safeMessageActivity();
+          return null;
+        }
+        dispatch({ type: "ensureThread", workspaceId, threadId: newThreadId });
+        updateThreadParent(threadId, [newThreadId]);
+        setActiveThreadId(newThreadId, workspaceId);
+        return newThreadId;
+      } catch (error) {
+        onDebug?.({
+          id: `${Date.now()}-client-thread-fork-error`,
+          timestamp: Date.now(),
+          source: "error",
+          label: "thread/fork error",
+          payload: error instanceof Error ? error.message : String(error),
+        });
+        pushThreadErrorMessage(
+          threadId,
+          error instanceof Error ? error.message : String(error),
+        );
+        safeMessageActivity();
+        return null;
+      }
+    },
+    [onDebug, pushThreadErrorMessage, safeMessageActivity, setActiveThreadId, updateThreadParent],
+  );
+
+  const rewindThreadToMessage = useCallback(
+    async (workspaceId: string, threadId: string, messageId: string) => {
+      if (!workspaceId || !threadId || !messageId) {
+        return;
+      }
+      onDebug?.({
+        id: `${Date.now()}-client-thread-rewind`,
+        timestamp: Date.now(),
+        source: "client",
+        label: "thread/rewind",
+        payload: { workspaceId, threadId, messageId },
+      });
+      try {
+        const response =
+          (await rewindThreadFilesService(
+            workspaceId,
+            threadId,
+            messageId,
+          )) as Record<string, unknown>;
+        onDebug?.({
+          id: `${Date.now()}-server-thread-rewind`,
+          timestamp: Date.now(),
+          source: "server",
+          label: "thread/rewind response",
+          payload: response,
+        });
+        const rpcError = extractRpcErrorMessage(response);
+        if (rpcError) {
+          pushThreadErrorMessage(threadId, `Rewind failed: ${rpcError}`);
+          safeMessageActivity();
+        }
+      } catch (error) {
+        onDebug?.({
+          id: `${Date.now()}-client-thread-rewind-error`,
+          timestamp: Date.now(),
+          source: "error",
+          label: "thread/rewind error",
+          payload: error instanceof Error ? error.message : String(error),
+        });
+        pushThreadErrorMessage(
+          threadId,
+          error instanceof Error ? error.message : String(error),
+        );
+        safeMessageActivity();
+      }
+    },
+    [onDebug, pushThreadErrorMessage, safeMessageActivity],
+  );
+
+  const forkAndRewindThread = useCallback(
+    async (workspaceId: string, threadId: string, messageId: string) => {
+      const forkedThreadId = await forkThreadFromMessage(
+        workspaceId,
+        threadId,
+        messageId,
+      );
+      if (!forkedThreadId) {
+        return;
+      }
+      await rewindThreadToMessage(workspaceId, forkedThreadId, messageId);
+    },
+    [forkThreadFromMessage, rewindThreadToMessage],
+  );
+
   const removeThread = useCallback(
     (workspaceId: string, threadId: string) => {
       unpinThread(workspaceId, threadId);
@@ -1980,6 +2110,9 @@ export function useThreads({
     startThreadForWorkspace,
     listThreadsForWorkspace,
     refreshThread,
+    forkThreadFromMessage,
+    rewindThreadToMessage,
+    forkAndRewindThread,
     resetWorkspaceThreads,
     loadOlderThreadsForWorkspace,
     sendUserMessage,

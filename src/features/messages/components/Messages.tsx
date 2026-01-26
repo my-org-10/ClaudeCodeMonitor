@@ -21,6 +21,7 @@ import { Markdown } from "./Markdown";
 import { DiffBlock } from "../../git/components/DiffBlock";
 import { languageFromPath } from "../../../utils/syntax";
 import { useFileLinkOpener } from "../hooks/useFileLinkOpener";
+import { useMessageMenu } from "../hooks/useMessageMenu";
 import { RequestUserInputMessage } from "../../app/components/RequestUserInputMessage";
 
 type MessagesProps = {
@@ -36,6 +37,21 @@ type MessagesProps = {
   onUserInputSubmit?: (
     request: RequestUserInputRequest,
     response: RequestUserInputResponse,
+  ) => void;
+  onForkThreadFromMessage?: (
+    workspaceId: string,
+    threadId: string,
+    messageId: string,
+  ) => void;
+  onRewindThreadToMessage?: (
+    workspaceId: string,
+    threadId: string,
+    messageId: string,
+  ) => void;
+  onForkAndRewindThread?: (
+    workspaceId: string,
+    threadId: string,
+    messageId: string,
   ) => void;
 };
 
@@ -70,6 +86,10 @@ type MessageRowProps = {
   codeBlockCopyUseModifier?: boolean;
   onOpenFileLink?: (path: string) => void;
   onOpenFileLinkMenu?: (event: React.MouseEvent, path: string) => void;
+  onShowMenu?: (
+    event: React.MouseEvent,
+    item: Extract<ConversationItem, { kind: "message" }>,
+  ) => void;
 };
 
 type ReasoningRowProps = {
@@ -605,6 +625,7 @@ const MessageRow = memo(function MessageRow({
   codeBlockCopyUseModifier,
   onOpenFileLink,
   onOpenFileLinkMenu,
+  onShowMenu,
 }: MessageRowProps) {
   const modelLabel = item.model ? formatModelLabel(item.model) : "";
   return (
@@ -626,6 +647,17 @@ const MessageRow = memo(function MessageRow({
             onOpenFileLink={onOpenFileLink}
             onOpenFileLinkMenu={onOpenFileLinkMenu}
           />
+          {onShowMenu && (
+            <button
+              type="button"
+              className="ghost message-menu-button"
+              onClick={(event) => onShowMenu(event, item)}
+              aria-label="Message options"
+              title="Message options"
+            >
+              <ChevronDown size={14} aria-hidden />
+            </button>
+          )}
           <button
             type="button"
             className={`ghost message-copy-button${isCopied ? " is-copied" : ""}`}
@@ -1020,6 +1052,9 @@ export const Messages = memo(function Messages({
   codeBlockCopyUseModifier = false,
   userInputRequests = [],
   onUserInputSubmit,
+  onForkThreadFromMessage,
+  onRewindThreadToMessage,
+  onForkAndRewindThread,
 }: MessagesProps) {
   const SCROLL_THRESHOLD_PX = 120;
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -1041,6 +1076,7 @@ export const Messages = memo(function Messages({
       : null;
   const scrollKey = `${scrollKeyForItems(items)}-${activeUserInputRequestId ?? "no-input"}`;
   const { openFileLink, showFileLinkMenu } = useFileLinkOpener(workspacePath);
+  const showMessageMenu = useMessageMenu();
 
   const isNearBottom = useCallback(
     (node: HTMLDivElement) =>
@@ -1123,6 +1159,49 @@ export const Messages = memo(function Messages({
     [],
   );
 
+  const canShowMessageMenu = Boolean(
+    threadId &&
+      workspaceId &&
+      onForkThreadFromMessage &&
+      onRewindThreadToMessage &&
+      onForkAndRewindThread,
+  );
+
+  const handleShowMessageMenu = useCallback(
+    (
+      event: React.MouseEvent,
+      item: Extract<ConversationItem, { kind: "message" }>,
+    ) => {
+      if (
+        !threadId ||
+        !workspaceId ||
+        !onForkThreadFromMessage ||
+        !onRewindThreadToMessage ||
+        !onForkAndRewindThread
+      ) {
+        return;
+      }
+      const canRewind = item.role === "user";
+      void showMessageMenu(event, {
+        canRewind,
+        onFork: () =>
+          onForkThreadFromMessage(workspaceId, threadId, item.id),
+        onRewind: () =>
+          onRewindThreadToMessage(workspaceId, threadId, item.id),
+        onForkAndRewind: () =>
+          onForkAndRewindThread(workspaceId, threadId, item.id),
+      });
+    },
+    [
+      onForkAndRewindThread,
+      onForkThreadFromMessage,
+      onRewindThreadToMessage,
+      showMessageMenu,
+      threadId,
+      workspaceId,
+    ],
+  );
+
   useEffect(() => {
     if (!bottomRef.current) {
       return undefined;
@@ -1176,6 +1255,7 @@ export const Messages = memo(function Messages({
           codeBlockCopyUseModifier={codeBlockCopyUseModifier}
           onOpenFileLink={openFileLink}
           onOpenFileLinkMenu={showFileLinkMenu}
+          onShowMenu={canShowMessageMenu ? handleShowMessageMenu : undefined}
         />
       );
     }

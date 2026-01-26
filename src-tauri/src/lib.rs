@@ -91,6 +91,8 @@ pub fn run() {
             claude::generate_commit_message,
             claude::generate_run_metadata,
             claude::resume_thread,
+            claude::fork_thread_from_message,
+            claude::rewind_thread_files,
             claude::list_threads,
             claude::archive_thread,
             claude::collaboration_mode_list,

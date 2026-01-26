@@ -558,6 +558,30 @@ export async function resumeThread(workspaceId: string, threadId: string) {
   return invoke<any>("resume_thread", { workspaceId, threadId });
 }
 
+export async function forkThreadFromMessage(
+  workspaceId: string,
+  threadId: string,
+  messageId: string,
+) {
+  return invoke<any>("fork_thread_from_message", {
+    workspaceId,
+    threadId,
+    messageId,
+  });
+}
+
+export async function rewindThreadFiles(
+  workspaceId: string,
+  threadId: string,
+  messageId: string,
+) {
+  return invoke<any>("rewind_thread_files", {
+    workspaceId,
+    threadId,
+    messageId,
+  });
+}
+
 export async function archiveThread(workspaceId: string, threadId: string) {
   return invoke<any>("archive_thread", { workspaceId, threadId });
 }

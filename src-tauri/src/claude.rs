@@ -5,7 +5,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -203,6 +203,114 @@ pub(crate) async fn resume_thread(
     .map_err(|err| err.to_string())??;
 
     Ok(json!({ "thread": thread }))
+}
+
+#[tauri::command]
+pub(crate) async fn fork_thread_from_message(
+    workspace_id: String,
+    thread_id: String,
+    message_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        return remote_backend::call_remote(
+            &*state,
+            app,
+            "fork_thread_from_message",
+            json!({
+                "workspaceId": workspace_id,
+                "threadId": thread_id,
+                "messageId": message_id
+            }),
+        )
+        .await;
+    }
+
+    let entry = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .get(&workspace_id)
+            .ok_or("workspace not connected")?
+            .entry
+            .clone()
+    };
+    let thread_id_clone = thread_id.clone();
+    let message_id_clone = message_id.clone();
+    let new_thread_id = tokio::task::spawn_blocking(move || {
+        fork_session_from_message(&entry, &thread_id_clone, &message_id_clone)
+    })
+    .await
+    .map_err(|err| err.to_string())??;
+
+    Ok(json!({ "threadId": new_thread_id }))
+}
+
+#[tauri::command]
+pub(crate) async fn rewind_thread_files(
+    workspace_id: String,
+    thread_id: String,
+    message_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        return remote_backend::call_remote(
+            &*state,
+            app,
+            "rewind_thread_files",
+            json!({
+                "workspaceId": workspace_id,
+                "threadId": thread_id,
+                "messageId": message_id
+            }),
+        )
+        .await;
+    }
+
+    let session = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .get(&workspace_id)
+            .ok_or("workspace not connected")?
+            .clone()
+    };
+
+    let default_bin = {
+        let settings = state.app_settings.lock().await;
+        settings.claude_bin.clone()
+    };
+    let claude_bin = session
+        .claude_bin
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or(default_bin);
+
+    session.kill_persistent_session(&thread_id).await?;
+
+    let mut command = build_claude_command_with_bin(claude_bin);
+    command.current_dir(&session.entry.path);
+    command.arg("--resume").arg(&thread_id);
+    command.arg("--rewind-files").arg(&message_id);
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+
+    let output = timeout(Duration::from_secs(60), command.output())
+        .await
+        .map_err(|_| "Claude CLI timed out".to_string())?
+        .map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        return Err(if detail.is_empty() {
+            "Claude CLI failed to rewind files".to_string()
+        } else {
+            detail
+        });
+    }
+
+    Ok(json!({ "ok": true }))
 }
 
 #[tauri::command]
@@ -2625,6 +2733,74 @@ fn resolve_sessions_index_path(entry: &WorkspaceEntry) -> Option<PathBuf> {
         Some(index_path)
     } else {
         None
+    }
+}
+
+fn fork_session_from_message(
+    entry: &WorkspaceEntry,
+    thread_id: &str,
+    message_id: &str,
+) -> Result<String, String> {
+    let session_path = resolve_session_path(entry, thread_id)
+        .ok_or_else(|| "Session file not found".to_string())?;
+    let project_dir = resolve_project_dir(entry)
+        .ok_or_else(|| "Session project directory not found".to_string())?;
+    let new_thread_id = Uuid::new_v4().to_string();
+    let new_path = project_dir.join(format!("{new_thread_id}.jsonl"));
+
+    let file = File::open(&session_path).map_err(|err| err.to_string())?;
+    let reader = BufReader::new(file);
+    let output = File::create(&new_path).map_err(|err| err.to_string())?;
+    let mut writer = BufWriter::new(output);
+    let mut found = false;
+
+    for line in reader.lines() {
+        let line = line.map_err(|err| err.to_string())?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(mut value) = serde_json::from_str::<Value>(&line) {
+            rewrite_session_id(&mut value, &new_thread_id);
+            let serialized = serde_json::to_string(&value).map_err(|err| err.to_string())?;
+            writer
+                .write_all(serialized.as_bytes())
+                .and_then(|_| writer.write_all(b"\n"))
+                .map_err(|err| err.to_string())?;
+            if value
+                .get("uuid")
+                .and_then(|uuid| uuid.as_str())
+                .is_some_and(|uuid| uuid == message_id)
+            {
+                found = true;
+                break;
+            }
+        } else {
+            writer
+                .write_all(line.as_bytes())
+                .and_then(|_| writer.write_all(b"\n"))
+                .map_err(|err| err.to_string())?;
+        }
+    }
+
+    writer.flush().map_err(|err| err.to_string())?;
+
+    if !found {
+        let _ = fs::remove_file(&new_path);
+        return Err("Message not found in session".to_string());
+    }
+
+    Ok(new_thread_id)
+}
+
+fn rewrite_session_id(value: &mut Value, new_session_id: &str) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    if obj.contains_key("sessionId") {
+        obj.insert("sessionId".to_string(), Value::String(new_session_id.to_string()));
+    }
+    if obj.contains_key("session_id") {
+        obj.insert("session_id".to_string(), Value::String(new_session_id.to_string()));
     }
 }
 
